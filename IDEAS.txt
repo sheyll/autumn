@@ -1,0 +1,25 @@
+
+  surf_board_finder (provides [surf_board_info])
+  surf_media_registry (container_for [surf_dsp]) %% this server will then receive spawn and exit messages when surf_dsps are started
+
+  surf_wrapper_server (requires [surf_board_info])
+
+  surf_board_controller (requires [{all_of, surf_wrapper_server}],
+                         provides [surf_itdm_node_info, surf_dsp_info])
+
+  surf_itdm_node (requires [{all_of, surf_board_controller}, surf_itdm_node_info])
+
+  surf_dsp (requires [{all_of, surf_board_controller}, surf_dsp_info])
+
+======
+
+surf_board_finder:found_board(BoardInfo) ->
+  di_context:announce({created, {surf_board_info, BoardInfo}}).
+
+surf_board_finder:lost_board(BoardInfo) ->
+  di_context:announce({removed, {surf_board_info, BoardInfo}}).
+
+
+
+di_context:provide
+

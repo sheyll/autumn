@@ -1,5 +1,6 @@
 {application, ${ARTIFACT},
   [{description, ${DESCRIPTION}},
+   {mod, {autumn, {au_main_config, au_module_attributes}}},
    {id, ${ID}},
    {vsn, ${VERSION}},
    {modules, ${MODULES}},

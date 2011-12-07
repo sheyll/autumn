@@ -66,18 +66,43 @@
 %%%
 %%% The default implementation seems to be {@link au_module_attributes}.
 %%%
+%%% Another topic of interest is the correct shutdown behaviour. In
+%%% conjunction with restarts race conditions might occur when the
+%%% user requests new values from a registry which has not yet
+%%% cleanedup invalid resources.
+%%%
+%%% Autumn handles this somehow.
+%%%
+%%% Process tree management is tricky. If c_worker requires b1_worker
+%%% and b2_worker, and both b-workers require a-worker, it might be
+%%% the case that it is not desired that a c-worker with b-workers
+%%% with diffrent a-workers is created. Autumn will only create
+%%% combine requirements to a set of start args when the dependencies
+%%% are compatible. Two dependencies are compatible when their start
+%%% args are compatible, meaning that same keys have same values.
+%%%
 %%% @end
 %%%=============================================================================
+
+
+-behaviour(application).
+
 
 %%%=============================================================================
 %%% Exports
 %%%=============================================================================
 
-%% Public API
--export([start/1
-%	 , provide_item/1
-%	 , withdraw_item/1
-	]).
+%% OTP Application API
+-export([start/2, stop/1]).
+
+%% API for other OTP Applications that wish to be managed by the
+%% autumn container.
+-export([start_app/2, stop_app/1]).
+
+%% API that can be called only by processes created by an autumn server
+-export([push/2,
+	 push_link/2,
+	 pull/3]).
 
 %%%=============================================================================
 %%% Types
@@ -90,7 +115,98 @@
 -include("autumn.hrl").
 
 %%%=============================================================================
-%%% API
+%%% API for OTP conform applications using autumn
+%%%=============================================================================
+
+%%------------------------------------------------------------------------------
+%% @doc
+%%
+%% This function must be used by OTP applications using autumn. A
+%% process is spawned and registered by the name of the application
+%% and is returned as `{ok, Pid}', this process will be an OTP conform
+%% supervisor that will contain all processes Autumn will start for
+%% this application.
+%%
+%% An application started with this function can be stopped by
+%% `stop_app/1'.
+%%
+%% @end
+%% ------------------------------------------------------------------------------
+-spec start_app(module(), term()) ->
+		   ok | {error, already_started}.
+start_app(_AppId, _ApplicationConfig) ->
+    todo.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%%
+%% Stop an application started with `start_app/2'.
+%%
+%% @end
+%% ------------------------------------------------------------------------------
+-spec stop_app({ok, pid()}) ->
+		      ok.
+stop_app({ok, _AppContext}) ->
+    todo.
+
+%%%=============================================================================
+%%% API for processes managed by autumn.
+%%%=============================================================================
+
+%%------------------------------------------------------------------------------
+%% @doc
+%%
+%% Push a value into the dependency injection mechanism. This might
+%% lead to new processes being spawned.
+%%
+%% The `Key' is used to identify the item. Other processes can
+%% articulate a dependency by specifying such a key as requirement.
+%%
+%% Autumn will add the key value pair to a tree containing all
+%% processes and configurations and will call `start' on all modules
+%% whose start arguments are completed by this push.
+%%
+%% All processes that listen to pushes and pulles of
+%% the key will get a call to  `notify_push/3'.
+%%
+%% @end
+%% ------------------------------------------------------------------------------
+-spec push(atom(), term()) ->
+		      ok.
+push(_Key, _Value) ->
+    todo.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%%
+%% This is like `push/2' with the difference that the key value pair
+%% is `pull/3'ed automatically when the calling process exits.
+%%
+%% @end
+%% ------------------------------------------------------------------------------
+-spec push_link(atom(), term()) ->
+		      ok.
+push_link(_Key, _Value) ->
+    todo.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%%
+%% Pulls a value, killing all dependend processes.
+%%
+%% All processes that listen to pushes and pulles of
+%% the key will get a call to  `notify_pull/4'.
+%%
+%% @end
+%% ------------------------------------------------------------------------------
+-spec pull(atom(), term(), term()) ->
+		      ok.
+pull(_Key, _Value, _Reason) ->
+    todo.
+
+
+%%%=============================================================================
+%%% Application callbacks
 %%%=============================================================================
 
 %%------------------------------------------------------------------------------
@@ -99,18 +215,16 @@
 %% name `autumn'.
 %% @end
 %%------------------------------------------------------------------------------
-start(Config) ->
-    {ok, _Pid} = actor:start_registered(?MODULE, Config).
+start(normal, #au_main_config{} = Config) ->
+    actor:start_registered(?MODULE, Config).
 
 %%------------------------------------------------------------------------------
 %% @doc
-%%
+%% Stops autumn and kills all applications.
 %% @end
 %%------------------------------------------------------------------------------
--spec start_app(module(), term()) ->
-		   ok | {error, already_started}.
-start_app(_AppId, _ApplicationConfi) ->
-    start_autumn_if_not_running().
+stop(_) ->
+    actor:stop_registered(?MODULE).
 
 %%%=============================================================================
 %%% internal functions
@@ -119,5 +233,3 @@ start_app(_AppId, _ApplicationConfi) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-start_autumn_if_not_running() ->
-    ok.

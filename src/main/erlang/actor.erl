@@ -29,8 +29,8 @@
 %%%=============================================================================
 
 %% Public API
--export([start/3,
-	 start/2,
+-export([spawn/3,
+	 spawn/2,
 	 rpc/2,
 	 rpc/3]).
 
@@ -38,14 +38,15 @@
 -export([new_process_entry/4,
 	 behaviour_info/1,
 	 info/1,
-	 receive_loop/3]).
+	 receive_loop/4]).
 
 %%%=============================================================================
 %%% Types
 %%%=============================================================================
 
--type start_options() :: [{timeout, Millis :: non_neg_integer() | infinity} |
-			  trap_exit].
+-type start_options() :: [trap_exit
+                          %% TODO: | link | monitor
+                         ].
 
 -type create_initial_state_result() :: {ok, Fun :: atom(), State :: term()}
 			| {error, Reason :: term()}.
@@ -65,12 +66,6 @@
 	{module      :: module(),
 	 current_fun :: atom(),
 	 start_args  :: term()}).
-
-%%%=============================================================================
-%%% Constants
-%%%=============================================================================
-
--define(DEFAULT_START_TIMEOUT, 5000).
 
 %%%=============================================================================
 %%% Behaviour
@@ -95,12 +90,19 @@ behaviour_info(_) ->
 %% `ActorModule:create_initial_state/1'.
 %%
 %% `ActorModule:create_initial_state/1' must return a value of type
-%% `create_initial_state_retval()', which has intuitve semantics (I hope).
+%% `create_initial_state_retval()', which has intuitve semantics (I
+%% hope).
 %%
-%% When the `create_initial_state' function returns no error, `{ok, ActorPid}' is
-%% returned, otherwise `{error, Reason}' will be returned.
+%% When the `create_initial_state' function returns no error, `{ok,
+%% ActorPid}' is returned, otherwise `{error, Reason}' will be
+%% returned.
 %%
-%% `ActorPid' can be used to send message to the actor process or for `rpc/2,3'.
+%% If the callback module contains a function called `actor_started'
+%% with one parameter, this function is called asynchronously by the
+%% new processes.
+%%
+%% `ActorPid' can be used to send message to the actor process or for
+%% `rpc/2,3'.
 %%
 %% `Options' is a proplist with self explaining semantics of type
 %% `start_options()'.
@@ -111,24 +113,32 @@ behaviour_info(_) ->
 %% This function returns `{ok, Pid}' when the processes was
 %% successfully started, and when an error occurres `{error, Reason}'.
 %%
+%% The initial callback which is called by the new process must return
+%% immediately. It should not do anything thats blocks for a long
+%% time. The timeout is currently 500 milli seconds.
+%%
+%% If anything more complicated and long lasting shall be done after
+%% the process was started, the callback module must do it an the
+%% optional callback function `actor_started/1'.
+%%
 %% @end
 %%------------------------------------------------------------------------------
--spec start(module(), term(), start_options()) ->
+-spec spawn(module(), term(), start_options()) ->
 		   {ok, pid()} | {error, term()}.
-start(Module, Args, Options) ->
-    wait_for_new_process(
-      erlang:spawn(?MODULE, new_process_entry,
-		   [self(), Module, Args, Options]),
-      Options).
+spawn(Module, Args, Options) ->
+    proc_lib:start(?MODULE,
+                   new_process_entry,
+                   [self(), Module, Args, Options],
+                   500).
 %%------------------------------------------------------------------------------
 %% @doc
-%% Convenience function. Like `start/3' but with `[]' as `Options'.
+%% Convenience function. Like `spawn/3' but with `[]' as `Options'.
 %% @end
 %%------------------------------------------------------------------------------
--spec start(module(), term()) ->
+-spec spawn(module(), term()) ->
 		   {ok, pid()} | {error, term()}.
-start(Module, Args) ->
-    start(Module, Args, []).
+spawn(Module, Args) ->
+    ?MODULE:spawn(Module, Args, []).
 
 %%------------------------------------------------------------------------------
 %% @doc
@@ -145,6 +155,8 @@ start(Module, Args) ->
 %% before soending the message, an exception will be thrown.
 %% @end
 %%------------------------------------------------------------------------------
+-spec rpc(pid(), term()) ->
+                 term().
 rpc(ActorPid, Msg) ->
     rpc(ActorPid, Msg, infinity).
 
@@ -155,6 +167,8 @@ rpc(ActorPid, Msg) ->
 %% exception will be thrown.
 %% @end
 %%------------------------------------------------------------------------------
+-spec rpc(pid(), term(), non_neg_integer() | infinity) ->
+                 term().
 rpc(ActorPid, Msg, Timeout) ->
     Info = case ?MODULE:info(ActorPid) of
 	       {error, Reason} ->
@@ -169,7 +183,7 @@ rpc(ActorPid, Msg, Timeout) ->
     Answerer = fun(Reply) ->
 		       From ! {'@rpc_reply', Ref, Reply}
 	       end,
-    ActorPid ! {'@actor_message', Answerer, Msg},
+    ActorPid ! {'@actor_rpc', Answerer, Msg, self()},
     receive
 	{'@rpc_reply', Ref, Reply} ->
 	    demonitor(Ref),
@@ -232,70 +246,77 @@ new_process_entry(Parent, Module, Args, Options) ->
     process_flag(trap_exit, proplists:get_bool(trap_exit, Options)),
     try Module:create_initial_state(Args) of
 	{ok, NextFun, NextState} ->
-	    Parent ! {self(), ok},
-	    ?MODULE:receive_loop(Module, NextFun, NextState);
+	    proc_lib:init_ack(Parent, {ok, self()}),
+            Debug = sys:debug_options([]),
+	    ?MODULE:receive_loop(Module, NextFun, NextState, Debug);
 
 	{error, Error} ->
-	    Parent ! {self(), error, Error};
+	    proc_lib:init_ack(Parent, {error, Error});
 
 	Other ->
-	    Parent ! {self(), error, {invalid_return_value, Other}}
+	    proc_lib:init_ack(Parent, {error, {invalid_return_value, Other}})
     catch
 	throw:E ->
-	    Parent ! {self(), error, {caught_exception, E}};
+	    proc_lib:init_ack(Parent, {error, {caught_exception, E}});
 
 	exit:R ->
-	    Parent ! {self(), error, {unexpected_exit, R}};
+	    proc_lib:init_ack(Parent, {error, {unexpected_exit, R}});
 
 	error:R ->
-	    Parent ! {self(), error, {runtime_error, R}}
+	    proc_lib:init_ack(Parent, {error, {runtime_error, R}})
     end.
 
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-receive_loop(ActorModule, Fun, State) ->
+receive_loop(ActorModule, Fun, State, Debug) ->
     update_actor_info(Fun),
+    Extra = {sys_dbg_extra, self()},
     receive
-	{'@actor_message', Answerer, Msg} ->
-	    ok;
+        {system, From, Request} ->
+            sys:handle_system_msg(Request,
+
+	Msg = {'@actor_rpc', RawAnswerer, Msg, From} ->
+            InEvent = {in, Msg, From},
+	    Answerer = fun(Answer) ->
+                               sys:handle_debug(Debug,
+                                                fun print_sys_debug/3,
+                                                Extra,
+                                                {out, Answer, From}),
+                               RawAnswerer(Answer)
+                       end;
 
 	Msg ->
-	    Answerer = fun(_) -> ok end
+            InEvent = {in, Msg},
+	    Answerer = fun(Answer) ->
+                               sys:handle_debug(Debug,
+                                                fun print_sys_debug/3,
+                                                Extra,
+                                                {answer_ignored, Answer})
+                       end
     end,
+    Debug2 = sys:handle_debug(Debug, fun print_sys_debug/3, Extra, InEvent),
     case
 	ActorModule:Fun(Answerer,
 			Msg,
 			State)
     of
 	{next, F, D} ->
-	    receive_loop(ActorModule, F, D);
+            Debug3 = sys:handle_debug(Debug2,
+                                      fun print_sys_debug/3,
+                                      Extra,
+                                      {actor_state_change, F}),
+	    receive_loop(ActorModule, F, D, Debug3);
 
 	no_change ->
-	    receive_loop(ActorModule, Fun, State);
+            Debug3 = sys:handle_debug(Debug2,
+                                      fun print_sys_debug/3,
+                                      Extra,
+                                      {actor_no_change, Fun}),
+	    receive_loop(ActorModule, Fun, State, Debug3);
 
 	{exit, Reason} ->
 	    exit(Reason)
-    end.
-
-%%------------------------------------------------------------------------------
-%% @private
-%%------------------------------------------------------------------------------
-wait_for_new_process(Pid, Options) ->
-    TimeOut = proplists:get_value(timeout, Options, ?DEFAULT_START_TIMEOUT),
-    receive
-	{Pid, ok} ->
-	    {ok, Pid};
-	{Pid, error, Error} ->
-	    {error, Error}
-    after TimeOut ->
-	    exit(Pid, kill),
-	    Ref = monitor(process, Pid),
-	    receive
-		{'DOWN', Ref, process, Pid, _} ->
-		    ok
-	    end,
-	    {error, timeout}
     end.
 
 %%------------------------------------------------------------------------------
@@ -310,6 +331,24 @@ initialize_actor_info(Module, Args) ->
 %% @private
 %%------------------------------------------------------------------------------
 update_actor_info(NewFun) ->
-    Info = get('@actor_info'),
+    Info = info(self()),
     put('@actor_info', Info#actor_info{current_fun = NewFun}).
 
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+format_from_info(Pid) ->
+    lists:flatten(
+      case get('@actor_info') of
+          undefined ->
+              io_lib:format("~w", [Pid]);
+          #actor_info{module = M,
+                      current_fun = F} ->
+              io_lib:format("~w:~w ~w", [M,F,Pid])
+      end).
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+print_sys_debug(Dev, SysMsg, Extra) ->
+    ok.

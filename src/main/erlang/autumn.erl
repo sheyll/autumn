@@ -2,10 +2,10 @@
 %%%=============================================================================
 %%% @doc
 %%%
-%%% Simple, pluggable dependency injection framework.
+%%% Pluggable supervision and dependency injection application.
 %%%
-%%% Manages starting of processes with the required parameters and
-%%% configuration items from erlang modules.
+%%% Manages starting and stopping of processes, and passing of
+%%% parameters.
 %%%
 %%% == Starting a process ==
 %%%
@@ -29,7 +29,7 @@
 %%% If a start argument is a process Autum will automatically exit the
 %%% process started by the start function of the module defining the
 %%% requirement when the required process exits.
-
+%%%
 %%% Autumn keeps track of what process provided what configuration
 %%% item; if a process that provided an item exits, autumn will not
 %%% exit the processes which require this item unless this is
@@ -100,9 +100,7 @@
 -export([start_app/2, stop_app/1]).
 
 %% API that can be called only by processes created by an autumn server
--export([push/2,
-	 push_link/2,
-	 pull/3]).
+-export([push/2, push_link/2, pull/3]).
 
 %%%=============================================================================
 %%% Types

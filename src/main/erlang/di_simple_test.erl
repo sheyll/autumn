@@ -8,9 +8,18 @@ start(Parms) ->
     actor:start(?MODULE, Parms, []).
 
 create_initial_state(_Parms) ->
-    {ok, ready, no_state}.
+    {ok, ready, 0}.
 
-ready(Reply, In, _) ->
-    Reply({di_simple_test_echo, In}),
-    no_change.
+ready(Reply, get, Count) ->
+    Reply(Count),
+    no_change;
+
+ready(Reply, stop, Count) ->
+    Reply(Count/0),
+    no_change;
+
+ready(Reply, inc, Count) ->
+    Reply(ok),
+    {next, ready, Count + 1}.
+
 

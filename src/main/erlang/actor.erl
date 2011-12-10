@@ -3,23 +3,36 @@
 %%%=============================================================================
 %%% @doc
 %%% Simple actor that allows to implement flexible server
-%%% processes. This actor adheres the OTP sys module so code uploads
-%%% etc shoud work.
+%%% processes. This actor implements the `sys:system_*' callbacks and
+%%% the actor process is started by `proc_lib'.
 %%%
-%%% As opposed to gen_* the implementation has to implement only three
-%%% functions:
+%%% Currently an actor is rather lightweight and does not support
+%%% global registration.
+%%%
+%%% As opposed to gen_* the implementation has to implement only:
 %%%
 %%%  * create_initial_state/1 - will be called with a proplist containing all
 %%%  requirered parameters.
 %%%
+%%% == Startup behaviour ==
 %%% In addition the callback module must implement a callback function
 %%% defined by the return value of `create_initial_state/1'. If `{ok, Fun, State}'
 %%% is returned, `ActorModule:Fun/3' will be called if the process
 %%% receives a message, or if `actor:rpc/2,3' is called.
 %%%
+%%% If the callback module contains a function called `actor_started'
+%%% with one parameter, this function is called asynchronously by the
+%%% new processes AFTER `actor:spawn/3' returns.
+%%%
+%%% == Message & RPC callbacks ==
 %%% This dynamic callback will get a special first argument: a reply
 %%% function.  This way the implementation can be decoupled from
 %%% wheter the caller wants to wait for an answer, or not.
+%%%
+%%% == Shutdown Behaviour ==
+%%% When an actor callback exits or crashes, the callback function
+%%% `actor_stopped' will be called with the last state and the exit
+%%% reason.
 %%%
 %%% @end
 %%%=============================================================================
@@ -38,7 +51,11 @@
 -export([new_process_entry/4,
 	 behaviour_info/1,
 	 info/1,
-	 receive_loop/4]).
+	 receive_loop/5,
+	 system_continue/3,
+	 system_terminate/4,
+	 system_code_change/4,
+	 print_sys_debug/3]).
 
 %%%=============================================================================
 %%% Types
@@ -99,7 +116,7 @@ behaviour_info(_) ->
 %%
 %% If the callback module contains a function called `actor_started'
 %% with one parameter, this function is called asynchronously by the
-%% new processes.
+%% new processes - AFTER - this function returns.
 %%
 %% `ActorPid' can be used to send message to the actor process or for
 %% `rpc/2,3'.
@@ -248,7 +265,7 @@ new_process_entry(Parent, Module, Args, Options) ->
 	{ok, NextFun, NextState} ->
 	    proc_lib:init_ack(Parent, {ok, self()}),
             Debug = sys:debug_options([]),
-	    ?MODULE:receive_loop(Module, NextFun, NextState, Debug);
+	    ?MODULE:receive_loop(Module, NextFun, NextState, Parent, Debug);
 
 	{error, Error} ->
 	    proc_lib:init_ack(Parent, {error, Error});
@@ -269,14 +286,17 @@ new_process_entry(Parent, Module, Args, Options) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-receive_loop(ActorModule, Fun, State, Debug) ->
+receive_loop(ActorModule,Fun, State, Parent, Debug) ->
     update_actor_info(Fun),
     Extra = {sys_dbg_extra, self()},
     receive
-        {system, From, Request} ->
-            sys:handle_system_msg(Request,
+        {system, From, Msg} ->
+	    InEvent = undefined,
+	    Answerer = undefined,
+            sys:handle_system_msg(Msg, From, Parent, ?MODULE, Debug,
+				  {receive_loop_state, ActorModule, Fun, State});
 
-	Msg = {'@actor_rpc', RawAnswerer, Msg, From} ->
+	{'@actor_rpc', RawAnswerer, Msg, From} ->
             InEvent = {in, Msg, From},
 	    Answerer = fun(Answer) ->
                                sys:handle_debug(Debug,
@@ -305,15 +325,11 @@ receive_loop(ActorModule, Fun, State, Debug) ->
             Debug3 = sys:handle_debug(Debug2,
                                       fun print_sys_debug/3,
                                       Extra,
-                                      {actor_state_change, F}),
-	    receive_loop(ActorModule, F, D, Debug3);
+                                      {state_change, F}),
+	    receive_loop(ActorModule, F, D, Parent, Debug3);
 
 	no_change ->
-            Debug3 = sys:handle_debug(Debug2,
-                                      fun print_sys_debug/3,
-                                      Extra,
-                                      {actor_no_change, Fun}),
-	    receive_loop(ActorModule, Fun, State, Debug3);
+	    receive_loop(ActorModule, Fun, State, Parent, Debug2);
 
 	{exit, Reason} ->
 	    exit(Reason)
@@ -339,8 +355,8 @@ update_actor_info(NewFun) ->
 %%------------------------------------------------------------------------------
 format_from_info(Pid) ->
     lists:flatten(
-      case get('@actor_info') of
-          undefined ->
+      case info(Pid) of
+          {error, _} ->
               io_lib:format("~w", [Pid]);
           #actor_info{module = M,
                       current_fun = F} ->
@@ -350,5 +366,42 @@ format_from_info(Pid) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-print_sys_debug(Dev, SysMsg, Extra) ->
-    ok.
+system_continue(Parent,Debug,{receive_loop_state, ActorModule, Fun, State}) ->
+    receive_loop(ActorModule, Fun, State, Parent, Debug).
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+system_terminate(Reason, _P, _D, {receive_loop_state, _AMod, _F, _S}) ->
+    %% TODO tell actor callback it is about to die?
+    exit(Reason).
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+system_code_change(_,_,_,_) ->
+    %% TODO pass on to actor callback
+    todo.
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+print_sys_debug(Dev, {in, Msg}, {sys_dbg_extra, ActorPid}) ->
+    io:format(Dev, "*DBG* ~s received ~p~n",[format_from_info(ActorPid), Msg]);
+print_sys_debug(Dev, {in, Msg, From}, {sys_dbg_extra, ActorPid}) ->
+    io:format(Dev, "*DBG* ~s received ~p from ~s~n",[format_from_info(ActorPid),
+						   Msg,
+						   format_from_info(From)]);
+print_sys_debug(Dev, {out, Msg, From}, {sys_dbg_extra, ActorPid}) ->
+    io:format(Dev, "*DBG* ~s sent ~p to ~s~n",[format_from_info(ActorPid),
+					     Msg,
+					     format_from_info(From)]);
+print_sys_debug(Dev, {answer_ignored, Answer}, {sys_dbg_extra, ActorPid}) ->
+    io:format(Dev, "*DBG* ~s discarded answer ~p~n",
+	      [format_from_info(ActorPid), Answer]);
+print_sys_debug(Dev, {state_change, F}, {sys_dbg_extra, ActorPid}) ->
+    io:format(Dev, "*DBG* ~s new state ~p~n", [format_from_info(ActorPid), F]);
+print_sys_debug(Dev, Msg, Extra) ->
+    io:format(Dev, "*DBG* unknown system message: ~w with extras: ~w~n",
+	      [Msg, Extra]).
+

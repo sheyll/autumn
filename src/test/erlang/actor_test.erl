@@ -245,6 +245,7 @@ rpc_delayed_answer_complete_test() ->
 	      end}),
     em:replay(M),
     {ok, Actor} = actor:spawn(test_actor, start_params, []),
+    sys:trace(Actor,true),
     monitor(process, Actor),
     ?assert(is_process_alive(Actor)),
     Test = self(),
@@ -267,5 +268,32 @@ rpc_delayed_answer_complete_test() ->
     end,
     em:verify(M),
     ok.
+
+%%%=============================================================================
+%%% OTP conformance tests.
+%%%=============================================================================
+
+test_sys_suspend() ->
+    ok.
+
+%%%=============================================================================
+%%% misc tests.
+%%%=============================================================================
+exit_trap_exit_test() ->
+    Test = self(),
+    spawn(fun() ->
+		  process_flag(trap_exit, true),
+		  exit(yeah),
+		  receive
+		      XX ->
+			  Test ! XX
+		  end
+	  end),
+
+    receive
+	XX ->
+	    throw(XX)
+    end.
+
 
 

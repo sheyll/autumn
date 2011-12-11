@@ -1,99 +1,22 @@
--module(autumn).
 %%%=============================================================================
 %%% @doc
-%%%
-%%% Pluggable supervision and dependency injection application.
-%%%
-%%% Manages starting and stopping of processes, and passing of
-%%% parameters.
-%%%
-%%% == Starting a process ==
-%%%
-%%% Processes are not started explicitly. Autumn starts them
-%%% automatically, when the conditions described below are met.
-%%%
-%%% Configuration items consist of a key and a value and have the form
-%%% `{Key :: atom(), Value :: term()}', processes have the form `{Key
-%%% :: atom(), Pid :: pid()}' the `Key' could be the module name of
-%%% the process.
-%%%
-%%% Start arguments are required by processes before to be
-%%% started. Processes are always associated with a single erlang
-%%% module. Start arguments are defined by enumeration of the keys of
-%%% the required configuration items and processes.
-%%%
-%%% All start arguments are combined to a single
-%%% `proplists:proplist()' and passed to the start function of the
-%%% module that defined the requirements.
-%%%
-%%% If a start argument is a process Autum will automatically exit the
-%%% process started by the start function of the module defining the
-%%% requirement when the required process exits.
-%%%
-%%% Autumn keeps track of what process provided what configuration
-%%% item; if a process that provided an item exits, autumn will not
-%%% exit the processes which require this item unless this is
-%%% explicitly defined in the configuration of the requirement.
-%%%
-%%% A module can define a set of keys and when a process is started by
-%%% that module, autumn will create a configuration item for each with
-%%% the form `{Key, pid()}'; these are added to the set of active
-%%% configuration items know by autumn, with the result that new
-%%% processes might be spawned.
-%%%
-%%% Autumn spawns a processes using the start function of the
-%%% corresponding module for every unique set of start arguments,
-%%% hence making the distinction between singleton and prototype
-%%% "bean" obsolete.
-%%%
-%%% Let me rephrase: for each complete set of configuration items that
-%%% are the required start arguments of a module, the start function
-%%% is called by autumn, with the expectation that a new process is
-%%% started - or a new configuration item is returned - with the form
-%%% `{ok, Pid}' or `{ok, ConfigItem}'.
-%%%
-%%% Besides start arguments a process can be a container for
-%%% configuration items. In this case those configuration items are
-%%% not required to start the process. The Autumn will then tell the
-%%% processes when a configuration item appers and when it
-%%% dissappears.
-%%%
-%%% How the required start arguments are found, how the container
-%%% processes can be configured is not contained in this
-%%% moduled. Autumn uses a helper module defined in the configuration
-%%% that is passed to the start function. The module defined there
-%%% must implement the {@link module_meta_data_helper} behaviour.
-%%%
-%%% The default implementation seems to be {@link au_module_attributes}.
-%%%
-%%% Another topic of interest is the correct shutdown behaviour. In
-%%% conjunction with restarts race conditions might occur when the
-%%% user requests new values from a registry which has not yet
-%%% cleanedup invalid resources.
-%%%
-%%% Autumn handles this somehow.
-%%%
-%%% Process tree management is tricky. If c_worker requires b1_worker
-%%% and b2_worker, and both b-workers require a-worker, it might be
-%%% the case that it is not desired that a c-worker with b-workers
-%%% with diffrent a-workers is created. Autumn will only create
-%%% combine requirements to a set of start args when the dependencies
-%%% are compatible. Two dependencies are compatible when their start
-%%% args are compatible, meaning that same keys have same values.
-%%%
+
+%%% This server is the head of the autumn application. It will do it
+%%% (the dependency injection and all the rest).
+
 %%% @end
 %%%=============================================================================
 
-
--behaviour(application).
-
+-module(autumn).
 
 %%%=============================================================================
 %%% Exports
 %%%=============================================================================
 
-%% OTP Application API
--export([start/2, stop/1]).
+-behaviour(gen_server).
+
+%% API
+-export([start_link/1]).
 
 %% API for other OTP Applications that wish to be managed by the
 %% autumn container.
@@ -102,15 +25,72 @@
 %% API that can be called only by processes created by an autumn server
 -export([push/2, push_link/2, pull/3]).
 
-%%%=============================================================================
-%%% Types
-%%%=============================================================================
+%% gen_server callbacks
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         code_change/3]).
 
 %%%=============================================================================
 %%% Includes
 %%%=============================================================================
 
 -include("autumn.hrl").
+
+%%%=============================================================================
+%%% Types
+%%%=============================================================================
+
+-define(SERVER, ?MODULE).
+-registered([?SERVER]).
+
+-record(active_app, {
+	  name :: atom(),
+	  sup :: pid(),
+	  modules :: [module()]
+	 }).
+
+-record(module_info, {
+	  name :: atom(),
+	  dependers :: [module()],
+	  containers :: [module()]
+	 }).
+
+-record(item_info, {
+	  id :: reference(),
+	  name :: atom(),
+	  value :: term(),
+	  creator :: pid()
+	 }).
+
+-record(process_info, {
+	  pid :: pid(),
+	  mod :: #module_info{},
+	  dependencies :: [#item_info{}]
+	 }).
+
+-record(state, {
+	  meta_info_loader :: module(),
+	  apps :: [#active_app{}],
+	  modules :: [#module_info{}],
+	  procs :: [#process_info{}]
+	}).
+
+%%%=============================================================================
+%%% API
+%%%=============================================================================
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% Start the server.
+%% @end
+%%------------------------------------------------------------------------------
+-spec start_link(#au_main_config{}) ->
+			{ok, pid()}.
+start_link(Config) ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, Config, []).
 
 %%%=============================================================================
 %%% API for OTP conform applications using autumn
@@ -202,32 +182,46 @@ push_link(_Key, _Value) ->
 pull(_Key, _Value, _Reason) ->
     todo.
 
-
 %%%=============================================================================
-%%% Application callbacks
-%%%=============================================================================
-
-%%------------------------------------------------------------------------------
-%% @doc
-%% Starts the dependency injection actor, and registers it with the
-%% name `autumn'.
-%% @end
-%%------------------------------------------------------------------------------
-start(normal, #au_main_config{} = Config) ->
-    actor:start_registered(?MODULE, Config).
-
-%%------------------------------------------------------------------------------
-%% @doc
-%% Stops autumn and kills all applications.
-%% @end
-%%------------------------------------------------------------------------------
-stop(_) ->
-    actor:stop_registered(?MODULE).
-
-%%%=============================================================================
-%%% internal functions
+%%% gen_server Callbacks
 %%%=============================================================================
 
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
+init([]) ->
+    {ok, #state{}}.
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+handle_call(Request, From, State) ->
+    {stop, unexpected_call, {undefined, Request}, State}.
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+handle_cast(Request, State) ->
+    {stop, unexpected_cast, State}.
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+handle_info(Info, State) ->
+    {noreply, State}.
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+terminate(_Reason, _State) ->
+    ok.
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+%%%=============================================================================
+%%% Internal Functions
+%%%=============================================================================

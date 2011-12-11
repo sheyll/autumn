@@ -5,10 +5,12 @@
 %%% This file contains some record definitions and useful macros
 %%%=============================================================================
 
-
+%% Configures the autumn meta data strategy etc...
 -record(au_main_config, {
-	  module_meta_data_helper = au_module_attributes :: module()
-	 }).
-
+	  %% this defines the helper module that will be used to
+	  %% create the configuration needed for dependency injection
+	  %% and auto wireing.
+	  au_meta_loader = au_module_attributes :: module()
+	 });
 
 -endif.

@@ -3,9 +3,9 @@
 %%%=============================================================================
 %%% @doc
 %%%
-%%% An implementation of `module_meta_data_helper' that reads the
-%%% attributes of modules to gather all the infos required by autumn's
-%%% dependency injection module.
+%%% An `au_meta_loader' that reads the attributes of modules to
+%%% gather all the infos required by autumn's dependency injection
+%%% module.
 %%%
 %%% @end
 %%%=============================================================================

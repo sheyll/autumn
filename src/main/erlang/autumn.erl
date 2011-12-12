@@ -20,7 +20,7 @@
 
 %% API for other OTP Applications that wish to be managed by the
 %% autumn container.
--export([start_app/2, stop_app/1]).
+-export([start_app/1, stop_app/1]).
 
 %% API that can be called only by processes created by an autumn server
 -export([push/2, push_link/2, pull/3]).
@@ -110,9 +110,9 @@ start_link(Config) ->
 %%
 %% @end
 %% ------------------------------------------------------------------------------
--spec start_app(module(), term()) ->
+-spec start_app(module()) ->
 		   ok | {error, already_started}.
-start_app(_AppId, _ApplicationConfig) ->
+start_app(_AppId) ->
     todo.
 
 %%------------------------------------------------------------------------------

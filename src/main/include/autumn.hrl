@@ -10,7 +10,7 @@
 	  %% this defines the helper module that will be used to
 	  %% create the configuration needed for dependency injection
 	  %% and auto wireing.
-	  au_meta_loader = au_module_attributes :: module()
-	 });
+	  meta_loader = au_module_attributes :: module()
+	 }).
 
 -endif.

@@ -10,6 +10,7 @@
 empty_start_app_stop_app_test() ->
     M = em:new(),
     AppSupPid = spawn(fun() -> receive xxx -> ok after 5000 -> ok end end),
+    %% start/stop of client app
     em:strict(M, au_app_sup, start_link, [test_app1],
 	      {ok, AppSupPid}),
     em:replay(M),
@@ -17,12 +18,8 @@ empty_start_app_stop_app_test() ->
     ?assertEqual({ok, AppSupPid}, autumn:start_app(test_app1)),
     ?assertEqual({error, already_started}, autumn:start_app(test_app1)),
     ?assertEqual(ok, autumn:stop_app(test_app1)),
-    monitor(process, AppSupPid),
+
     em:verify(M),
-    receive
-	{'DOWN', _, _, AppSupPid, _} ->
-	    ok
-    end,
     ok.
 
 start_app_with_one_module_test() ->

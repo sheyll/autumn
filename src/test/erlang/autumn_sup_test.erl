@@ -8,9 +8,8 @@
 %%%=============================================================================
 
 start_test() ->
-    Config = #au_main_config{},
     M = em:new(),
-    em:strict(M, autumn_server, start_link, [Config],
+    em:strict(M, autumn, start_link, [],
 	      {function,
 	       fun(_) ->
 		       Pid = spawn_link(fun() ->
@@ -24,7 +23,7 @@ start_test() ->
 	       end}),
     em:replay(M),
 
-    {ok, Pid} = autumn_sup:start_link(Config),
+    {ok, Pid} = autumn_sup:start_link(),
     unlink(Pid),
     exit(Pid, shutdown),
 

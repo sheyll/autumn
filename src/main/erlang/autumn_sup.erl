@@ -14,7 +14,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/1]).
+-export([start_link/0]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -28,8 +28,8 @@
 %% Starts the supervisor.
 %% @end
 %%------------------------------------------------------------------------------
-start_link(Config) ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, Config).
+start_link() ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 %%%=============================================================================
 %%% supervisor Callbacks
@@ -38,14 +38,16 @@ start_link(Config) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-init(Config) ->
+init([]) ->
     RestartStrategy = one_for_one,
     MaxRestarts = 5,
     MaxTSeconds = 1800,
-    AutumnServer = {autumn_server,
-		    {autumn_server, start_link, [Config]},
-		    permanent, 5000, worker, [autumn_server]},
-    {ok, {{RestartStrategy, MaxRestarts, MaxTSeconds}, [AutumnServer]}}.
+    AutumnServer = {autumn,
+		    {autumn, start_link, []},
+		    permanent, 300000, worker, [autumn]},
+    {ok,
+     {{RestartStrategy, MaxRestarts, MaxTSeconds},
+      [AutumnServer]}}.
 
 %%%=============================================================================
 %%% Internal Functions

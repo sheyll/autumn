@@ -7,24 +7,30 @@
 %%% Tests to start the application
 %%%=============================================================================
 
-empty_start_app_stop_app_test() ->
+empty_start_app_test() ->
     M = em:new(),
-    AppSupPid = spawn(fun() -> receive xxx -> ok after 5000 -> ok end end),
+    AppSupPid1 = spawn(fun() -> receive xxx -> ok after 5000 -> ok end end),
+    AppSupPid2 = spawn(fun() -> receive xxx -> ok after 5000 -> ok end end),
+    Config = #au_main_config{},
     %% start/stop of client app
-    em:strict(M, au_app_sup, start_link, [test_app1],
-	      {ok, AppSupPid}),
+    em:strict(M, au_app_sup, start_link, [test_app1, Config],
+	      {function, fun(_) ->
+				 link(AppSupPid1),
+				 {ok, AppSupPid1}
+			 end}),
+    em:strict(M, au_app_sup, start_link, [test_app1, Config],
+	      {return, {ok, AppSupPid2}}),
     em:replay(M),
-    autumn:start_link(#au_main_config{meta_loader=test_loader}),
-    ?assertEqual({ok, AppSupPid}, autumn:start_app(test_app1)),
-    ?assertEqual({error, already_started}, autumn:start_app(test_app1)),
-    ?assertEqual(ok, autumn:stop_app(test_app1)),
-
+    autumn:start_link(),
+    ?assertEqual({ok, AppSupPid1}, autumn:start_app(test_app1, Config)),
+    process_flag(trap_exit, true),
+    exit(AppSupPid1, shutdown),
+    monitor(process, AppSupPid1),
+    receive {'DOWN', _, _, AppSupPid1, _} -> ok end,
+    ?assertEqual({ok, AppSupPid2}, autumn:start_app(test_app1, Config)),
+    ?assertEqual({error, already_started}, autumn:start_app(test_app1, Config)),
     em:verify(M),
     ok.
-
-start_app_with_one_module_test() ->
-    ok.
-
 
 unhandled_info_test() ->
     ?assertEqual({noreply, state}, autumn_server:handle_info(info, state)).

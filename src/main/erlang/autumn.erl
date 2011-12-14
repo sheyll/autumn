@@ -16,11 +16,11 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/1]).
+-export([start_link/0]).
 
 %% API for other OTP Applications that wish to be managed by the
 %% autumn container.
--export([start_app/1, stop_app/1]).
+-export([start_app/2]).
 
 %% API that can be called only by processes created by an autumn server
 -export([push/2, push_link/2, pull/3]).
@@ -88,10 +88,10 @@
 %% Start the server.
 %% @end
 %%------------------------------------------------------------------------------
--spec start_link(#au_main_config{}) ->
+-spec start_link() ->
 			{ok, pid()}.
-start_link(Config) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, Config, []).
+start_link() ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %%%=============================================================================
 %%% API for OTP conform applications using autumn
@@ -106,27 +106,12 @@ start_link(Config) ->
 %% supervisor that will contain all processes Autumn will start for
 %% this application.
 %%
-%% An application started with this function can be stopped by
-%% `stop_app/1'.
-%%
 %% @end
 %% ------------------------------------------------------------------------------
--spec start_app(module()) ->
+-spec start_app(module(), #au_main_config{}) ->
 		   ok | {error, already_started}.
-start_app(AppId) ->
-    au_app_sup:start_link(AppId).
-
-%%------------------------------------------------------------------------------
-%% @doc
-%%
-%% Stop an application started with `start_app/2'.
-%%
-%% @end
-%% ------------------------------------------------------------------------------
--spec stop_app({ok, pid()}) ->
-		      ok.
-stop_app({ok, _AppContext}) ->
-    todo.
+start_app(AppId, Config) ->
+    gen_server:call(?SERVER, {start_app, AppId, Config}).
 
 %%%=============================================================================
 %%% API for processes managed by autumn.
@@ -190,14 +175,15 @@ pull(_Key, _Value, _Reason) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-init(Config) ->
+init(_) ->
+    process_flag(trap_exit, true),
     {ok, #state{}}.
 
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-handle_call(Request, From, State) ->
-    {stop, unexpected_call, {undefined, Request}, State}.
+handle_call({start_app, AppId, Config}, _From, State) ->
+    {reply, au_app_sup:start_link(AppId, Config), State}.
 
 %%------------------------------------------------------------------------------
 %% @private

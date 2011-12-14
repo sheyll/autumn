@@ -118,16 +118,16 @@
 %% name `autumn'.
 %% @end
 %%------------------------------------------------------------------------------
-start(normal, #au_main_config{} = Config) ->
-    autumn_sup:start(Config).
+start(normal, _Config) ->
+    autumn_sup:start().
 
 %%------------------------------------------------------------------------------
 %% @doc
-%% Stops autumn and kills all applications.
+%% Currently NoOP
 %% @end
 %%------------------------------------------------------------------------------
 stop(_) ->
-    autumn_sup:stop().
+    ok.
 
 %%%=============================================================================
 %%% internal functions

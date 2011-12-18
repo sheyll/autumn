@@ -11,7 +11,7 @@ start_invalid_return_test() ->
     em:strict(M, test_actor, create_initial_state, [start_params],
 	     {return, something}),
     em:replay(M),
-    Res = actor:spawn(test_actor, start_params, []),
+    Res = actor:spawn(test_actor, start_params),
     em:verify(M),
     ?assertMatch({error, {invalid_return_value, something}}, Res),
     ok.
@@ -40,7 +40,6 @@ start_timeout_test() ->
     ok.
 
 start_throw_test() ->
-    Time = 10,
     M = em:new(),
     em:strict(M, test_actor, create_initial_state, [start_params],
 	     {function,
@@ -48,13 +47,12 @@ start_throw_test() ->
 		      throw(test_exception)
 	      end}),
     em:replay(M),
-    Res = actor:spawn(test_actor, start_params, [{timeout, Time}]),
+    Res = actor:spawn(test_actor, start_params),
     em:verify(M),
     ?assertMatch({error, {caught_exception, test_exception}}, Res),
     ok.
 
 start_kill_test() ->
-    Time = 10,
     M = em:new(),
     em:strict(M, test_actor, create_initial_state, [start_params],
 	     {function,
@@ -62,13 +60,12 @@ start_kill_test() ->
 		      exit(kill)
 	      end}),
     em:replay(M),
-    Res = actor:spawn(test_actor, start_params, [{timeout, Time}]),
+    Res = actor:spawn(test_actor, start_params),
     em:verify(M),
     ?assertMatch({error, {unexpected_exit, kill}}, Res),
     ok.
 
 start_exit_test() ->
-    Time = 10,
     M = em:new(),
     em:strict(M, test_actor, create_initial_state, [start_params],
 	     {function,
@@ -76,14 +73,13 @@ start_exit_test() ->
 		      exit(some_reason)
 	      end}),
     em:replay(M),
-    Res = actor:spawn(test_actor, start_params, [{timeout, Time}]),
+    Res = actor:spawn(test_actor, start_params),
     em:verify(M),
     ?assertEqual({error, {unexpected_exit, some_reason}},
 		 Res),
     ok.
 
 start_runtime_error_test() ->
-    Time = 10,
     M = em:new(),
     Zero = 0,
     em:strict(M, test_actor, create_initial_state, [Zero],
@@ -92,10 +88,57 @@ start_runtime_error_test() ->
 		      10 / Z
 	      end}),
     em:replay(M),
-    Res = actor:spawn(test_actor, Zero, [{timeout, Time}]),
+    Res = actor:spawn(test_actor, Zero),
     em:verify(M),
     ?assertEqual({error, {runtime_error, badarith}},
 		 Res),
+    ok.
+
+%%%=============================================================================
+%%% spawn_link test
+%%%=============================================================================
+
+link_test() ->
+    M = em:new(),
+    em:strict(M, test_actor, create_initial_state, [start_params],
+	     {return, {ok, actor_fun_1, actor_state_1}}),
+    em:replay(M),
+    {ok, Actor} = actor:spawn_link(test_actor, start_params),
+    process_flag(trap_exit, true),
+    exit(Actor, test_kill),
+    em:verify(M),
+    receive
+	{'EXIT', Actor, test_kill} -> ok
+    end.
+
+%%%=============================================================================
+%%% actor started callback test
+%%%=============================================================================
+actor_stopped_test() ->
+    todo.
+
+%%%=============================================================================
+%%% actor started callback test
+%%%=============================================================================
+
+actor_started_test() ->
+    M = em:new(),
+    T = self(),
+    em:strict(M, test_actor, create_initial_state, [start_params],
+	     {return, {ok, actor_fun_1, actor_state_1}}),
+    em:strict(M, test_actor, actor_started, [actor_state_1],
+	     {function,
+	      fun(_) ->
+		      T ! ok,
+		      no_change
+	      end}),
+    em:replay(M),
+    {ok, Actor} = actor:spawn(test_actor, start_params),
+    receive
+	ok -> ok
+    end,
+    em:verify(M),
+    ?assert(is_process_alive(Actor)),
     ok.
 
 %%%=============================================================================
@@ -107,7 +150,7 @@ start_ok_test() ->
     em:strict(M, test_actor, create_initial_state, [start_params],
 	     {return, {ok, actor_fun_1, actor_state_1}}),
     em:replay(M),
-    {ok, Actor} = actor:spawn(test_actor, start_params, []),
+    {ok, Actor} = actor:spawn(test_actor, start_params),
     em:verify(M),
     ?assert(is_process_alive(Actor)),
     ok.
@@ -123,7 +166,7 @@ rpc_callback_exits_test() ->
     em:strict(M, test_actor, fun_1, [em:any(), request_msg, state_1],
 	     {function, fun(_) -> exit(normal) end}),
     em:replay(M),
-    {ok, Actor} = actor:spawn(test_actor, start_params, []),
+    {ok, Actor} = actor:spawn(test_actor, start_params),
     ?assert(is_process_alive(Actor)),
     Res = (catch actor:rpc(Actor, request_msg)),
     em:verify(M),
@@ -163,7 +206,7 @@ rpc_timeout_test() ->
 	     {function,
 	      fun(_) -> receive after Timeout + 1 -> no_change end end}),
     em:replay(M),
-    {ok, Actor} = actor:spawn(test_actor, start_params, []),
+    {ok, Actor} = actor:spawn(test_actor, start_params),
     ?assert(is_process_alive(Actor)),
     Res = (catch actor:rpc(Actor, request_msg, Timeout)),
     em:verify(M),
@@ -182,7 +225,7 @@ rpc_callback_throw_test() ->
     em:strict(M, test_actor, fun_1, [em:any(), request_msg, state_1],
 	     {function, fun(_) -> throw(test_exception) end}),
     em:replay(M),
-    {ok, Actor} = actor:spawn(test_actor, start_params, []),
+    {ok, Actor} = actor:spawn(test_actor, start_params),
     ?assert(is_process_alive(Actor)),
     Res = (catch actor:rpc(Actor, request_msg)),
     em:verify(M),
@@ -200,7 +243,7 @@ rpc_callback_runtime_error_test() ->
     em:strict(M, test_actor, fun_1, [em:any(), request_msg, state_1],
 	     {function, fun(Args) -> Args * 4  end}),
     em:replay(M),
-    {ok, Actor} = actor:spawn(test_actor, start_params, []),
+    {ok, Actor} = actor:spawn(test_actor, start_params),
     ?assert(is_process_alive(Actor)),
     Res = (catch actor:rpc(Actor, request_msg)),
     em:verify(M),
@@ -244,7 +287,7 @@ rpc_delayed_answer_complete_test() ->
 		      {exit, test_reason}
 	      end}),
     em:replay(M),
-    {ok, Actor} = actor:spawn(test_actor, start_params, []),
+    {ok, Actor} = actor:spawn(test_actor, start_params),
     sys:trace(Actor,true),
     monitor(process, Actor),
     ?assert(is_process_alive(Actor)),
@@ -273,27 +316,6 @@ rpc_delayed_answer_complete_test() ->
 %%% OTP conformance tests.
 %%%=============================================================================
 
-test_sys_suspend() ->
-    ok.
-
-%%%=============================================================================
-%%% misc tests.
-%%%=============================================================================
-exit_trap_exit_test() ->
-    Test = self(),
-    spawn(fun() ->
-		  process_flag(trap_exit, true),
-		  exit(yeah),
-		  receive
-		      XX ->
-			  Test ! XX
-		  end
-	  end),
-
-    receive
-	XX ->
-	    throw(XX)
-    end.
-
-
+test_sys_code_change() ->
+    todo.
 

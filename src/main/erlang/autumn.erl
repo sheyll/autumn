@@ -19,7 +19,10 @@
 -export([start_link/0]).
 
 %% API that can be called only by processes created by an autumn server
--export([push/2, push_link/2, pull/3]).
+-export([add_factory/4,
+	 remove_factory/1,
+	 push/2,
+	 pull/3]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -42,38 +45,11 @@
 -define(SERVER, ?MODULE).
 -registered([?SERVER]).
 
--record(active_app, {
-	  name :: atom(),
-	  sup :: pid(),
-	  modules :: [module()]
-	 }).
+-record(factory,
+	{}).
 
--record(module_info, {
-	  name :: atom(),
-	  dependers :: [module()],
-	  containers :: [module()]
-	 }).
-
--record(item_info, {
-	  id :: reference(),
-	  name :: atom(),
-	  value :: term(),
-	  creator :: pid()
-	 }).
-
--record(process_info, {
-	  pid :: pid(),
-	  mod :: #module_info{},
-	  dependencies :: [#item_info{}]
-	 }).
-
--record(state, {
-	  meta_info_loader :: module(),
-	  app_sup :: pid(),
-	  apps :: [#active_app{}],
-	  modules :: [#module_info{}],
-	  procs :: [#process_info{}]
-	}).
+-record(state,
+	{factories = [] :: [#factory{}]}).
 
 %%%=============================================================================
 %%% API
@@ -95,6 +71,74 @@ start_link() ->
 
 %%------------------------------------------------------------------------------
 %% @doc
+%% Adds factory function defined by a module and a function.
+%%
+%% The same Id value must be passed to `remove_factory' to remove the
+%% factory.
+%%
+%% The function defined by the last three parameters is supposed to
+%% start and link a process that requires the start args referred to
+%% by the list of ids passed as second parameter. The function will be
+%% invoked for every kosher set of start arguments and the resulting
+%% process will be terminated as soon as an item passed in as start
+%% argument is invalidated.
+%%
+%% The arguments of the function `M:F' begin with `ExtraArgs' followed
+%% by a proplist of the items requested by the first parameter.
+%%
+%% The third parameter is a list of item keys that the process created
+%% by the factory creates. It is helpful for both the implementation
+%% of autumn as well as the user of autumn if for every module managed
+%% by autumn the emerging items are explicitly stated.
+%%
+%% Return values:
+%%
+%%  * `ok' the factory was added
+%%  * `{error, function_not_exported}'
+%%  * `{error, already_added}'
+%%  * `{error, {required_items_not_provided, [au_item:key()]}}'
+%%
+%%
+%% @end
+%% ------------------------------------------------------------------------------
+-spec add_factory(Id       :: term(),
+		  Requires :: [au_item:key()],
+		  Provides :: [au_item:key()],
+		  {M :: module(), F :: atom(), A :: [term()]}) ->
+			 ok |
+			 {error,
+			  function_not_exported |
+			  already_added |
+			  {required_items_not_provided, [au_item:key()]}}.
+add_factory(Id, Requires, Provides, {M,F,A}) ->
+    case erlang:function_exported(M, F, length(A) + 1) of
+	true ->
+	    gen_server:call(?SERVER,
+			    {add_factory, Id, Requires, Provides, {M,F,A}});
+	_ ->
+	    {error, function_not_exported}
+    end.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%%
+%% Removes a factory definition added by `add_factory'. The processes
+%% started by the factory will continue to run.
+%%
+%% Return values:
+%%
+%%  * `ok' the factory was removed successfully
+%%  * `{error, not_found}'
+%%
+%% @end
+%%------------------------------------------------------------------------------
+-spec remove_factory(term()) ->
+			 ok.
+remove_factory(Id) ->
+    todo.
+
+%%------------------------------------------------------------------------------
+%% @doc
 %%
 %% Push a value into the dependency injection mechanism. This might
 %% lead to new processes being spawned.
@@ -106,8 +150,8 @@ start_link() ->
 %% processes and configurations and will call `start' on all modules
 %% whose start arguments are completed by this push.
 %%
-%% All processes that listen to pushes and pulles of
-%% the key will get a call to  `notify_push/3'.
+%% Autumn will automatically pull the values away when the process
+%% calling push dies.
 %%
 %% @end
 %% ------------------------------------------------------------------------------
@@ -119,23 +163,7 @@ push(_Key, _Value) ->
 %%------------------------------------------------------------------------------
 %% @doc
 %%
-%% This is like `push/2' with the difference that the key value pair
-%% is `pull/3'ed automatically when the calling process exits.
-%%
-%% @end
-%% ------------------------------------------------------------------------------
--spec push_link(atom(), term()) ->
-		      ok.
-push_link(_Key, _Value) ->
-    todo.
-
-%%------------------------------------------------------------------------------
-%% @doc
-%%
 %% Pulls a value, killing all dependend processes.
-%%
-%% All processes that listen to pushes and pulles of
-%% the key will get a call to  `notify_pull/4'.
 %%
 %% @end
 %% ------------------------------------------------------------------------------
@@ -158,7 +186,8 @@ init(_) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-handle_call(_Reg, _From, State) ->
+handle_call({add_factory, Id, Requires, Provides, {M,F,A}}, _From, State) ->
+
     {reply, ok, State}.
 
 %%------------------------------------------------------------------------------

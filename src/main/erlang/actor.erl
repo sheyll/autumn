@@ -42,13 +42,13 @@
 %%%=============================================================================
 
 %% Public API
--export([spawn/3,
+-export([spawn_link/2,
 	 spawn/2,
 	 rpc/2,
 	 rpc/3]).
 
 %% Internal API
--export([new_process_entry/4,
+-export([new_process_entry/3,
 	 behaviour_info/1,
 	 info/1,
 	 receive_loop/5,
@@ -61,10 +61,6 @@
 %%% Types
 %%%=============================================================================
 
--type start_options() :: [trap_exit
-                          %% TODO: | link | monitor
-                         ].
-
 -type create_initial_state_result() :: {ok, Fun :: atom(), State :: term()}
 			| {error, Reason :: term()}.
 
@@ -76,7 +72,6 @@
 
 -export_type([reply_fun/0,
 	      callback_result/0,
-	      start_options/0,
 	      create_initial_state_result/0]).
 
 -record(actor_info,
@@ -140,22 +135,25 @@ behaviour_info(_) ->
 %%
 %% @end
 %%------------------------------------------------------------------------------
--spec spawn(module(), term(), start_options()) ->
-		   {ok, pid()} | {error, term()}.
-spawn(Module, Args, Options) ->
-    proc_lib:start(?MODULE,
-                   new_process_entry,
-                   [self(), Module, Args, Options],
-                   500).
-%%------------------------------------------------------------------------------
-%% @doc
-%% Convenience function. Like `spawn/3' but with `[]' as `Options'.
-%% @end
-%%------------------------------------------------------------------------------
 -spec spawn(module(), term()) ->
 		   {ok, pid()} | {error, term()}.
 spawn(Module, Args) ->
-    ?MODULE:spawn(Module, Args, []).
+    proc_lib:start(?MODULE,
+                   new_process_entry,
+                   [self(), Module, Args],
+                   500).
+%%------------------------------------------------------------------------------
+%% @doc
+%% Convenience function. Like `spawn/2' but links.
+%% @end
+%%------------------------------------------------------------------------------
+-spec spawn_link(module(), term()) ->
+		   {ok, pid()} | {error, term()}.
+spawn_link(Module, Args) ->
+    proc_lib:start_link(?MODULE,
+			new_process_entry,
+			[self(), Module, Args],
+			500).
 
 %%------------------------------------------------------------------------------
 %% @doc
@@ -258,14 +256,18 @@ info(ActorPid) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-new_process_entry(Parent, Module, Args, Options) ->
+new_process_entry(Parent, Module, Args) ->
     initialize_actor_info(Module, Args),
-    process_flag(trap_exit, proplists:get_bool(trap_exit, Options)),
     try Module:create_initial_state(Args) of
 	{ok, NextFun, NextState} ->
 	    proc_lib:init_ack(Parent, {ok, self()}),
             Debug = sys:debug_options([]),
-	    ?MODULE:receive_loop(Module, NextFun, NextState, Parent, Debug);
+	    case erlang:function_exported(Module, actor_started, 1) of
+		true ->
+		    call_actor_started(Module, NextFun, NextState, Parent, Debug);
+		false ->
+		    ?MODULE:receive_loop(Module, NextFun, NextState, Parent, Debug)
+	    end;
 
 	{error, Error} ->
 	    proc_lib:init_ack(Parent, {error, Error});
@@ -316,24 +318,12 @@ receive_loop(ActorModule,Fun, State, Parent, Debug) ->
                        end
     end,
     Debug2 = sys:handle_debug(Debug, fun print_sys_debug/3, Extra, InEvent),
-    case
-	ActorModule:Fun(Answerer,
-			Msg,
-			State)
-    of
-	{next, F, D} ->
-            Debug3 = sys:handle_debug(Debug2,
-                                      fun print_sys_debug/3,
-                                      Extra,
-                                      {state_change, F}),
-	    receive_loop(ActorModule, F, D, Parent, Debug3);
-
-	no_change ->
-	    receive_loop(ActorModule, Fun, State, Parent, Debug2);
-
-	{exit, Reason} ->
-	    exit(Reason)
-    end.
+    handle_actor_result(ActorModule:Fun(Answerer, Msg, State),
+			Debug2,
+			ActorModule,
+			Parent,
+			Fun,
+			State).
 
 %%------------------------------------------------------------------------------
 %% @private
@@ -405,3 +395,35 @@ print_sys_debug(Dev, Msg, Extra) ->
     io:format(Dev, "*DBG* unknown system message: ~w with extras: ~w~n",
 	      [Msg, Extra]).
 
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+call_actor_started(ActorModule, Fun, State, Parent, Debug) ->
+    update_actor_info(actor_started),
+    Extra = {sys_dbg_extra, self()},
+    Debug2 = sys:handle_debug(Debug,
+			      fun print_sys_debug/3,
+			      Extra,
+			      {in, 'actor_started'}),
+    handle_actor_result(ActorModule:actor_started(State),
+			Debug2, ActorModule, Parent, Fun, State).
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+handle_actor_result(Result, Debug, ActorModule, Parent, Fun, State) ->
+    Extra = {sys_dbg_extra, self()},
+    case Result of
+	{next, F, D} ->
+            Debug2 = sys:handle_debug(Debug,
+                                      fun print_sys_debug/3,
+                                      Extra,
+                                      {state_change, F}),
+	    ?MODULE:receive_loop(ActorModule, F, D, Parent, Debug2);
+
+	no_change ->
+	    ?MODULE:receive_loop(ActorModule, Fun, State, Parent, Debug);
+
+	{exit, Reason} ->
+	    exit(Reason)
+    end.

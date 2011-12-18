@@ -7,30 +7,23 @@
 %%% Tests to start the application
 %%%=============================================================================
 
-empty_start_app_test() ->
+add_factory_not_exported_test() ->
+    {ok, _Pid} = autumn:start_link(),
+    Res = autumn:add_factory(test_id, [], [], {test_m, test_f, [test_arg]}),
+    ?assertEqual({error, function_not_exported}, Res).
+
+add_factory_already_added_test() ->
     M = em:new(),
-    AppSupPid1 = spawn(fun() -> receive xxx -> ok after 5000 -> ok end end),
-    AppSupPid2 = spawn(fun() -> receive xxx -> ok after 5000 -> ok end end),
-    Config = #au_main_config{},
-    %% start/stop of client app
-    em:strict(M, au_app_sup, start_link, [test_app1, Config],
-	      {function, fun(_) ->
-				 link(AppSupPid1),
-				 {ok, AppSupPid1}
-			 end}),
-    em:strict(M, au_app_sup, start_link, [test_app1, Config],
-	      {return, {ok, AppSupPid2}}),
+    em:stub(M, test_m, test_f, [test_arg, []]),
     em:replay(M),
-    autumn:start_link(),
-    ?assertEqual({ok, AppSupPid1}, autumn:start_app(test_app1, Config)),
-    process_flag(trap_exit, true),
-    exit(AppSupPid1, shutdown),
-    monitor(process, AppSupPid1),
-    receive {'DOWN', _, _, AppSupPid1, _} -> ok end,
-    ?assertEqual({ok, AppSupPid2}, autumn:start_app(test_app1, Config)),
-    ?assertEqual({error, already_started}, autumn:start_app(test_app1, Config)),
+
+    {ok, _Pid} = autumn:start_link(),
+    Res1 = autumn:add_factory(test_id, [], [], {test_m, test_f, [test_arg]}),
+    Res2 = autumn:add_factory(test_id, [], [], {test_m, test_f, [test_arg]}),
     em:verify(M),
-    ok.
+    ?assertEqual(ok, Res1),
+    ?assertEqual({error, already_added}, Res2).
+
 
 unhandled_info_test() ->
     ?assertEqual({noreply, state}, autumn_server:handle_info(info, state)).

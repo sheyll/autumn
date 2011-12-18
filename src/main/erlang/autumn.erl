@@ -18,10 +18,6 @@
 %% API
 -export([start_link/0]).
 
-%% API for other OTP Applications that wish to be managed by the
-%% autumn container.
--export([start_app/2]).
-
 %% API that can be called only by processes created by an autumn server
 -export([push/2, push_link/2, pull/3]).
 
@@ -94,26 +90,6 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %%%=============================================================================
-%%% API for OTP conform applications using autumn
-%%%=============================================================================
-
-%%------------------------------------------------------------------------------
-%% @doc
-%%
-%% This function must be used by OTP applications using autumn. A
-%% process is spawned and registered by the name of the application
-%% and is returned as `{ok, Pid}', this process will be an OTP conform
-%% supervisor that will contain all processes Autumn will start for
-%% this application.
-%%
-%% @end
-%% ------------------------------------------------------------------------------
--spec start_app(module(), #au_main_config{}) ->
-		   ok | {error, already_started}.
-start_app(AppId, Config) ->
-    gen_server:call(?SERVER, {start_app, AppId, Config}).
-
-%%%=============================================================================
 %%% API for processes managed by autumn.
 %%%=============================================================================
 
@@ -182,8 +158,8 @@ init(_) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-handle_call({start_app, AppId, Config}, _From, State) ->
-    {reply, au_app_sup:start_link(AppId, Config), State}.
+handle_call(_Reg, _From, State) ->
+    {reply, ok, State}.
 
 %%------------------------------------------------------------------------------
 %% @private

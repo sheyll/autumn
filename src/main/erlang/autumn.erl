@@ -45,11 +45,9 @@
 -define(SERVER, ?MODULE).
 -registered([?SERVER]).
 
--record(factory,
-	{}).
-
 -record(state,
-	{factories = [] :: [#factory{}]}).
+	{factories = dict:new() :: dict() %% id -> #factory{}
+	}).
 
 %%%=============================================================================
 %%% API
@@ -94,10 +92,8 @@ start_link() ->
 %% Return values:
 %%
 %%  * `ok' the factory was added
-%%  * `{error, function_not_exported}'
-%%  * `{error, already_added}'
-%%  * `{error, {required_items_not_provided, [au_item:key()]}}'
-%%
+%%  * `{error, {function_not_exported, module(), atom(), non_neg_integer()}}'
+%%  * `{error, {already_added, Id}}'
 %%
 %% @end
 %% ------------------------------------------------------------------------------
@@ -107,16 +103,16 @@ start_link() ->
 		  {M :: module(), F :: atom(), A :: [term()]}) ->
 			 ok |
 			 {error,
-			  function_not_exported |
-			  already_added |
-			  {required_items_not_provided, [au_item:key()]}}.
+			  {function_not_exported,
+			   module(), atom(), non_neg_integer()} |
+			  {already_added, term()}}.
 add_factory(Id, Requires, Provides, {M,F,A}) ->
     case erlang:function_exported(M, F, length(A) + 1) of
 	true ->
 	    gen_server:call(?SERVER,
 			    {add_factory, Id, Requires, Provides, {M,F,A}});
 	_ ->
-	    {error, function_not_exported}
+	    {error, {function_not_exported, M, F, length(A) + 1}}
     end.
 
 %%------------------------------------------------------------------------------
@@ -128,14 +124,14 @@ add_factory(Id, Requires, Provides, {M,F,A}) ->
 %% Return values:
 %%
 %%  * `ok' the factory was removed successfully
-%%  * `{error, not_found}'
+%%  * `{error, {not_found, Id}}'
 %%
 %% @end
 %%------------------------------------------------------------------------------
--spec remove_factory(term()) ->
-			 ok.
+-spec remove_factory(Id :: term()) ->
+			 ok | {error, {not_found, Id :: term()}}.
 remove_factory(Id) ->
-    todo.
+    gen_server:call(?SERVER, {remove_factory, Id}).
 
 %%------------------------------------------------------------------------------
 %% @doc
@@ -186,9 +182,21 @@ init(_) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-handle_call({add_factory, Id, Requires, Provides, {M,F,A}}, _From, State) ->
+handle_call({add_factory, Id, Requires, Provides, {M,F,A}}, _, S) ->
+    case get_factory_by_id(Id, S) of
+	{ok, _} ->
+	    {reply, {error, {already_added, Id}}, S};
+	error ->
+	    {reply, ok, add_factory(Id, Requires, Provides, {M,F,A}, S)}
+    end;
 
-    {reply, ok, State}.
+handle_call({remove_factory, Id}, _, S) ->
+    case get_factory_by_id(Id, S) of
+	{ok, _} ->
+	    {reply, ok, remove_factory(Id, S)};
+	error ->
+	    {reply, {error, {not_found, Id}}, S}
+    end.
 
 %%------------------------------------------------------------------------------
 %% @private
@@ -217,3 +225,26 @@ code_change(_OldVsn, State, _Extra) ->
 %%%=============================================================================
 %%% Internal Functions
 %%%=============================================================================
+
+%%%                                                            Factory Functions
+
+%%------------------------------------------------------------------------------
+%% @private
+get_factory_by_id(Id, #state{factories = Fs}) ->
+    dict:find(Id, Fs).
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+add_factory(Id, Requires, Provides, MFA, S) ->
+    Fs = S#state.factories,
+    Factory = #factory{id = Id, req = Requires, prov = Provides, start = MFA},
+    S#state{factories = dict:store(Id, Factory, Fs)}.
+
+%%------------------------------------------------------------------------------
+%% @private
+%%------------------------------------------------------------------------------
+remove_factory(Id, S) ->
+    Fs = S#state.factories,
+    S#state{factories = dict:erase(Id, Fs)}.
+

@@ -1,9 +1,9 @@
 %%%=============================================================================
 %%% @doc
-
+%%%
 %%% This server is the head of the autumn application. It will do it
 %%% (the dependency injection and all the rest).
-
+%%%
 %%% @end
 %%%=============================================================================
 
@@ -19,7 +19,7 @@
 -export([start_link/0]).
 
 %% API that can be called only by processes created by an autumn server
--export([add_factory/4,
+-export([add_factory/3,
 	 remove_factory/1,
 	 push/2,
 	 pull/3]).
@@ -45,8 +45,13 @@
 -define(SERVER, ?MODULE).
 -registered([?SERVER]).
 
+-type factory_id() :: term().
+-type start_args() :: [au_item:ref()].
+
 -record(state,
-	{factories = dict:new() :: dict() %% id -> #factory{}
+	{factories = dict:new() :: dict(),%% id -> #factory{}
+	 active    = dict:new() :: dict(),%% {factory_id(), [au_item:ref()]} -> pid()
+	 items     = dict:new() :: dict() %% au_item:key() -> au_item:ref()
 	}).
 
 %%%=============================================================================
@@ -84,36 +89,20 @@ start_link() ->
 %% The arguments of the function `M:F' begin with `ExtraArgs' followed
 %% by a proplist of the items requested by the first parameter.
 %%
-%% The third parameter is a list of item keys that the process created
-%% by the factory creates. It is helpful for both the implementation
-%% of autumn as well as the user of autumn if for every module managed
-%% by autumn the emerging items are explicitly stated.
-%%
 %% Return values:
 %%
 %%  * `ok' the factory was added
-%%  * `{error, {function_not_exported, module(), atom(), non_neg_integer()}}'
 %%  * `{error, {already_added, Id}}'
 %%
 %% @end
 %% ------------------------------------------------------------------------------
--spec add_factory(Id       :: term(),
+-spec add_factory(Id       :: factory_id(),
 		  Requires :: [au_item:key()],
-		  Provides :: [au_item:key()],
 		  {M :: module(), F :: atom(), A :: [term()]}) ->
-			 ok |
-			 {error,
-			  {function_not_exported,
-			   module(), atom(), non_neg_integer()} |
-			  {already_added, term()}}.
-add_factory(Id, Requires, Provides, {M,F,A}) ->
-    case erlang:function_exported(M, F, length(A) + 1) of
-	true ->
-	    gen_server:call(?SERVER,
-			    {add_factory, Id, Requires, Provides, {M,F,A}});
-	_ ->
-	    {error, {function_not_exported, M, F, length(A) + 1}}
-    end.
+			 ok | {error, {already_added, term()}}.
+add_factory(Id, Requires, {M,F,A}) ->
+    gen_server:call(?SERVER,
+		    {add_factory, Id, Requires, {M,F,A}}).
 
 %%------------------------------------------------------------------------------
 %% @doc
@@ -151,10 +140,11 @@ remove_factory(Id) ->
 %%
 %% @end
 %% ------------------------------------------------------------------------------
--spec push(atom(), term()) ->
+-spec push(au_item:key(), au_item:value()) ->
 		      ok.
-push(_Key, _Value) ->
-    todo.
+push(Key, Value) ->
+    Item = au_item:start_link(Key, Value),
+    gen_server:call(?SERVER, {push, Item}).
 
 %%------------------------------------------------------------------------------
 %% @doc
@@ -163,7 +153,7 @@ push(_Key, _Value) ->
 %%
 %% @end
 %% ------------------------------------------------------------------------------
--spec pull(atom(), term(), term()) ->
+-spec pull(au_item:key(), au_item:value(), term()) ->
 		      ok.
 pull(_Key, _Value, _Reason) ->
     todo.
@@ -182,12 +172,12 @@ init(_) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-handle_call({add_factory, Id, Requires, Provides, {M,F,A}}, _, S) ->
+handle_call({add_factory, Id, Requires, {M,F,A}}, _, S) ->
     case get_factory_by_id(Id, S) of
 	{ok, _} ->
 	    {reply, {error, {already_added, Id}}, S};
 	error ->
-	    {reply, ok, add_factory(Id, Requires, Provides, {M,F,A}, S)}
+	    {reply, ok, add_factory(Id, Requires, {M,F,A}, S)}
     end;
 
 handle_call({remove_factory, Id}, _, S) ->
@@ -229,17 +219,18 @@ code_change(_OldVsn, State, _Extra) ->
 %%%                                                            Factory Functions
 
 %%------------------------------------------------------------------------------
-%% @private
+%% @private Look up the a factory by its id
+%%-----------------------------------------------------------------------------
 get_factory_by_id(Id, #state{factories = Fs}) ->
     dict:find(Id, Fs).
 
 %%------------------------------------------------------------------------------
-%% @private
+%% @private Add a factory to the set of factories.If possible apply factory.
 %%------------------------------------------------------------------------------
-add_factory(Id, Requires, Provides, MFA, S) ->
+add_factory(Id, Requires, MFA, S) ->
     Fs = S#state.factories,
-    Factory = #factory{id = Id, req = Requires, prov = Provides, start = MFA},
-    S#state{factories = dict:store(Id, Factory, Fs)}.
+    Factory = #factory{id = Id, req = Requires, start = MFA},
+    apply_factory(Factory, S#state{factories = dict:store(Id, Factory, Fs)}).
 
 %%------------------------------------------------------------------------------
 %% @private
@@ -248,3 +239,63 @@ remove_factory(Id, S) ->
     Fs = S#state.factories,
     S#state{factories = dict:erase(Id, Fs)}.
 
+%%------------------------------------------------------------------------------
+%% @doc
+%% This invokes the factory to create a process for every unique and
+%% valid set of start args.
+%% @end
+%%------------------------------------------------------------------------------
+apply_factory(F, S) ->
+    Reqs = F#factory.req,
+    %% fetch all items for all required start arguments
+    StartArgsValues= [get_values_by_key(R, S) || R <- Reqs],
+
+    %% create the cartesian product of all types of start arguments...
+    StartArgsSets = [StartArgsSet || StartArgsSet <- perms(StartArgsValues),
+				     %% .. filtering start arg sets alredy used
+				     not is_active(F, StartArgsSet, S)],
+
+    %% start a child for every set of start args
+    lists:foldl(start_factory_child(F), S, StartArgsSets).
+
+%%------------------------------------------------------------------------------
+%% @private Create all permutations of a list of lists.
+%%------------------------------------------------------------------------------
+-spec perms([[term()]]) -> [[term()]].
+perms([S|Sets]) ->
+    [[X|P] || X <- S, P <- perms(Sets)];
+perms([]) ->
+    [[]].
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% Returns `true' if a factory has already been applied to a start arg set.
+%% @end
+%%------------------------------------------------------------------------------
+is_active(#factory{id = Id}, StartArgsSet, S) ->
+    not (dict:find({Id, StartArgsSet}, S#state.active) =:= error).
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% Starts a new child of a factory for some start args and adds it to the state.
+%% @end
+%%------------------------------------------------------------------------------
+start_factory_child(F) ->
+    fun(StartArgSet, S) ->
+	    {ok, Pid} = au_factory:start_child(F, StartArgSet),
+	    S#state{active = dict:store({F#factory.id, StartArgSet}, Pid,
+					S#state.active)}
+    end.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% Fetches a list of items associated to an item key.
+%% @end
+%%------------------------------------------------------------------------------
+get_values_by_key(ItemId, S) ->
+    case dict:find(ItemId, S#state.items) of
+	error ->
+	    [];
+	{ok, Items} ->
+	    Items
+    end.

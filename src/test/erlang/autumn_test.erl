@@ -9,22 +9,11 @@
 
 %%%................................................................Factory Tests
 
-add_factory_not_exported_test() ->
-    {ok, _Pid} = autumn:start_link(),
-    Res = autumn:add_factory(test_id, [], [], {test_m, test_f, [test_arg]}),
-    ?assertEqual({error, {function_not_exported, test_m, test_f, 2}}, Res).
-
 add_factory_already_added_test() ->
-    M = em:new(),
-    Pid = start(),
-    em:stub(M, au_factory, start_child, [em:any(), em:any()],
-	    {return, {ok, Pid}}),
-    em:replay(M),
     {ok, _Pid} = autumn:start_link(),
     MFA = {test_m, test_f, [test_arg]},
-    Res1 = autumn:add_factory(test_id, [], [], MFA),
-    Res2 = autumn:add_factory(test_id, [], [], MFA),
-    em:verify(M),
+    Res1 = autumn:add_factory(test_id, [xx], MFA),
+    Res2 = autumn:add_factory(test_id, [xx], MFA),
     ?assertEqual(ok, Res1),
     ?assertEqual({error, {already_added, test_id}}, Res2).
 
@@ -34,16 +23,10 @@ remove_not_existant_factory_test() ->
     ?assertEqual({error, {not_found, test_id}}, Res).
 
 remove_existant_factory_test() ->
-    M = em:new(),
-    Pid = start(),
-    em:stub(M, au_factory, start_child, [em:any(), em:any()],
-	    {return, {ok, Pid}}),
-    em:replay(M),
     {ok, _Pid} = autumn:start_link(),
-    Res1 = autumn:add_factory(test_id, [], [], {test_m, test_f, [test_arg]}),
+    Res1 = autumn:add_factory(test_id, [xx], {test_m, test_f, [test_arg]}),
     Res2 = autumn:remove_factory(test_id),
-    Res3 = autumn:add_factory(test_id, [], [], {test_m, test_f, [test_arg]}),
-    em:verify(M),
+    Res3 = autumn:add_factory(test_id, [xx], {test_m, test_f, [test_arg]}),
     ?assertEqual(ok, Res1),
     ?assertEqual(ok, Res2),
     ?assertEqual(ok, Res3).
@@ -56,30 +39,37 @@ independent_factory_test() ->
     MFA = {test_m, test_f, [test_arg]},
     Factory = #factory{id = test_id,
 		       req = [],
-		       prov = [],
 		       start = MFA},
     em:strict(M, au_factory, start_child, [Factory, []],
 	      {return, {ok, Pid}}),
     em:replay(M),
     {ok, _Pid} = autumn:start_link(),
-    Res = autumn:add_factory(test_id, [], [], MFA),
+    Res = autumn:add_factory(test_id, [], MFA),
     em:verify(M),
     ?assertEqual(ok, Res).
 
-dependend_factory_test() ->
-    stop_autumn(),
-    {ok, _Pid} = autumn:start_link(),
-    Res1 = autumn:add_factory(test_id, [xxx], [], {test_m, test_f, [test_arg]}),
-    ?assertEqual(ok, Res1).
+%%%...................................................................Push Tests
 
-create_dependent_processes_test() ->
+push_test() ->
     stop_autumn(),
+    M = em:new(),
+    Pid = start(),
+    MFA = {test_m, test_f, [test_arg]},
+    Factory = #factory{id = test_id,
+		       req = [xxx],
+		       start = MFA},
+    em:strict(M, au_factory, start_child,
+	      [Factory, fun([I]) ->
+				au_item:key(I) == xxx andalso
+				    au_item:value(I) == some_val
+			end],
+	      {return, {ok, Pid}}),
+    em:replay(M),
     {ok, _Pid} = autumn:start_link(),
-    ok = autumn:add_factory(parent, [], [parent_info],
-			    {parent_m, start_l, [test_arg]}),
-    ok = autumn:add_factory(child, [parent_info], [],
-			    {child_m, start_l, [test_arg]}),
-    stop_autumn().
+    Res1 = autumn:add_factory(test_id, [xxx], {test_m, test_f, [test_arg]}),
+    autumn:push(xxx, some_val),
+    em:verify(M),
+    ?assertEqual(ok, Res1).
 
 %%%............................................................Boilerplate Tests
 

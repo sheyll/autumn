@@ -22,7 +22,8 @@
 -export([add_factory/3,
 	 remove_factory/1,
 	 push/2,
-	 pull/3]).
+	 push/1,
+	 pull/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -46,12 +47,13 @@
 -registered([?SERVER]).
 
 -type factory_id() :: term().
--type start_args() :: [au_item:ref()].
 
 -record(state,
 	{factories = dict:new() :: dict(),%% id -> #factory{}
-	 active    = dict:new() :: dict(),%% {factory_id(), [au_item:ref()]} -> pid()
-	 items     = dict:new() :: dict() %% au_item:key() -> au_item:ref()
+	 %% {factory_id(), [au_item:ref()]} -> pid()
+	 active    = dict:new() :: dict(),
+	 items     = dict:new() :: dict(), %% au_item:key() -> au_item:ref()
+	 down_handler = dict:new() :: dict() %% reference() -> fun/2
 	}).
 
 %%%=============================================================================
@@ -125,26 +127,33 @@ remove_factory(Id) ->
 %%------------------------------------------------------------------------------
 %% @doc
 %%
-%% Push a value into the dependency injection mechanism. This might
-%% lead to new processes being spawned.
+%% Provide an item, that factories may use to start new
+%% processes. NOTE: A processes MUST NOT push an item that was
+%% injected as start argument. There is no reason why this should be
+%% necessary. When this is done some autumn functions might get into
+%% infinite loops.
 %%
-%% The `Key' is used to identify the item. Other processes can
-%% articulate a dependency by specifying such a key as requirement.
+%% @end
+%% ------------------------------------------------------------------------------
+-spec push(au_item:ref()) ->
+		      ok.
+push(Item) ->
+    gen_server:cast(?SERVER, {push, Item}).
+
+%%------------------------------------------------------------------------------
+%% @doc
 %%
-%% Autumn will add the key value pair to a tree containing all
-%% processes and configurations and will call `start' on all modules
-%% whose start arguments are completed by this push.
-%%
-%% Autumn will automatically pull the values away when the process
-%% calling push dies.
+%% Provide an item, that factories may use to start new
+%% processes. This is a conveniece function that will create a new
+%% item process and link it with the calling process.
 %%
 %% @end
 %% ------------------------------------------------------------------------------
 -spec push(au_item:key(), au_item:value()) ->
 		      ok.
 push(Key, Value) ->
-    Item = au_item:start_link(Key, Value),
-    gen_server:call(?SERVER, {push, Item}).
+    Item = au_item:new_link(Key, Value),
+    gen_server:cast(?SERVER, {push, Item}).
 
 %%------------------------------------------------------------------------------
 %% @doc
@@ -153,10 +162,11 @@ push(Key, Value) ->
 %%
 %% @end
 %% ------------------------------------------------------------------------------
--spec pull(au_item:key(), au_item:value(), term()) ->
+-spec pull(au_item:ref(), term()) ->
 		      ok.
-pull(_Key, _Value, _Reason) ->
-    todo.
+pull(Item, Reason) ->
+    %% TODO memory leak at monitoring!!!
+    gen_server:cast(?SERVER, {pull, Item, Reason}).
 
 %%%=============================================================================
 %%% gen_server Callbacks
@@ -191,14 +201,18 @@ handle_call({remove_factory, Id}, _, S) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-handle_cast(Request, State) ->
-    {stop, unexpected_cast, State}.
+handle_cast({push, Item}, S) ->
+    S2 = add_item(Item, S),
+    Factories = find_factory_by_dependency(au_item:key(Item), S2),
+    S3 = lists:foldl(fun apply_factory/2, S2, Factories),
+    {noreply, S3}.
 
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-handle_info(Info, State) ->
-    {noreply, State}.
+handle_info({'DOWN',Ref,_,_,Reason}, #state{down_handler=DH} = S) ->
+    S2 = (dict:fetch(Ref, DH))(S, Reason),
+    {noreply, S2#state{down_handler = dict:erase(Ref, DH)}}.
 
 %%------------------------------------------------------------------------------
 %% @private
@@ -299,3 +313,72 @@ get_values_by_key(ItemId, S) ->
 	{ok, Items} ->
 	    Items
     end.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% Return a list of factories that depend on a specific item key.
+%% @end
+%%------------------------------------------------------------------------------
+-spec find_factory_by_dependency(au_item:key(), #state{}) ->
+					[#factory{}].
+find_factory_by_dependency(K, #state{factories = Fs}) ->
+    [F || {_,F} <- dict:to_list(Fs),
+	  lists:member(K, F#factory.req)].
+
+
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% Add an item to the set of available items.
+%% @end
+%%------------------------------------------------------------------------------
+-spec add_item(au_item:ref(), #state{}) ->
+		      #state{}.
+add_item(Item, S) ->
+    K = au_item:key(Item),
+    Ref = au_item:monitor(Item),
+    ItemDown = fun(State, Reason) ->
+		       remove_item(Item, State, Reason)
+	       end,
+    ItemsWithSameKey = get_values_by_key(K, S),
+    S#state{
+      items = dict:store(K, [Item|ItemsWithSameKey], S#state.items),
+      down_handler = dict:store(Ref, ItemDown, S#state.down_handler)
+     }.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% Remove an item from the set of available items. No effect if the item
+%% is not available. All depending processes will be terminated.
+%% @end
+%%------------------------------------------------------------------------------
+-spec remove_item(au_item:ref(), #state{}, term()) ->
+			 #state{}.
+remove_item(Item, S, Reason) ->
+    NewVs = [V || V <- get_values_by_key(au_item:key(Item), S),
+		  V =/= Item],
+    S2 = S#state{items = dict:store(au_item:key(Item), NewVs, S#state.items)},
+    stop_dependent(Item, S2, Reason).
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% Exits all factory instances that depend on a specific item.
+%% @end
+%%------------------------------------------------------------------------------
+-spec stop_dependent(au_item:ref(), #state{}, term()) ->
+			     #state{}.
+stop_dependent(I, S = #state{active = As}, Reason) ->
+    S#state{active =
+		dict:filter(fun({_Id, Reqs}, Pid) ->
+				    case lists:member(I, Reqs) of
+					true ->
+					    exit(Pid, Reason),
+					    false;
+					_ ->
+					    true
+				    end
+			    end,
+			    As)}.
+
+
+

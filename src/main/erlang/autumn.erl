@@ -19,11 +19,10 @@
 -export([start_link/0]).
 
 %% API that can be called only by processes created by an autumn server
--export([add_factory/3,
+-export([add_factory/1,
 	 remove_factory/1,
 	 push/2,
-	 push/1,
-	 pull/2]).
+	 push/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -98,13 +97,11 @@ start_link() ->
 %%
 %% @end
 %% ------------------------------------------------------------------------------
--spec add_factory(Id       :: factory_id(),
-		  Requires :: [au_item:key()],
-		  {M :: module(), F :: atom(), A :: [term()]}) ->
+-spec add_factory(Factory  :: #factory{}) ->
 			 ok | {error, {already_added, term()}}.
-add_factory(Id, Requires, {M,F,A}) ->
+add_factory(Factory) ->
     gen_server:call(?SERVER,
-		    {add_factory, Id, Requires, {M,F,A}}).
+		    {add_factory, Factory}).
 
 %%------------------------------------------------------------------------------
 %% @doc
@@ -150,23 +147,11 @@ push(Item) ->
 %% @end
 %% ------------------------------------------------------------------------------
 -spec push(au_item:key(), au_item:value()) ->
-		      ok.
+		      {ok, au_item:ref()}.
 push(Key, Value) ->
     Item = au_item:new_link(Key, Value),
-    gen_server:cast(?SERVER, {push, Item}).
-
-%%------------------------------------------------------------------------------
-%% @doc
-%%
-%% Pulls a value, killing all dependend processes.
-%%
-%% @end
-%% ------------------------------------------------------------------------------
--spec pull(au_item:ref(), term()) ->
-		      ok.
-pull(Item, Reason) ->
-    %% TODO memory leak at monitoring!!!
-    gen_server:cast(?SERVER, {pull, Item, Reason}).
+    gen_server:cast(?SERVER, {push, Item}),
+    {ok, Item}.
 
 %%%=============================================================================
 %%% gen_server Callbacks
@@ -182,17 +167,19 @@ init(_) ->
 %%------------------------------------------------------------------------------
 %% @private
 %%------------------------------------------------------------------------------
-handle_call({add_factory, Id, Requires, {M,F,A}}, _, S) ->
+handle_call({add_factory, Factory =  #factory{id = Id}}, _, S) ->
     case get_factory_by_id(Id, S) of
 	{ok, _} ->
 	    {reply, {error, {already_added, Id}}, S};
 	error ->
-	    {reply, ok, add_factory(Id, Requires, {M,F,A}, S)}
+	    error_logger:info_report(autumn, [{adding_factory, Id}]),
+	    {reply, ok, add_factory(Factory, S)}
     end;
 
 handle_call({remove_factory, Id}, _, S) ->
     case get_factory_by_id(Id, S) of
 	{ok, _} ->
+	    error_logger:info_report(autumn, [{removing_factory, Id}]),
 	    {reply, ok, remove_factory(Id, S)};
 	error ->
 	    {reply, {error, {not_found, Id}}, S}
@@ -202,6 +189,7 @@ handle_call({remove_factory, Id}, _, S) ->
 %% @private
 %%------------------------------------------------------------------------------
 handle_cast({push, Item}, S) ->
+    error_logger:info_report(autumn, [{pushed, Item}]),
     S2 = add_item(Item, S),
     Factories = find_factory_by_dependency(au_item:key(Item), S2),
     S3 = lists:foldl(fun apply_factory/2, S2, Factories),
@@ -241,9 +229,8 @@ get_factory_by_id(Id, #state{factories = Fs}) ->
 %%------------------------------------------------------------------------------
 %% @private Add a factory to the set of factories.If possible apply factory.
 %%------------------------------------------------------------------------------
-add_factory(Id, Requires, MFA, S) ->
+add_factory(Factory = #factory{id = Id}, S) ->
     Fs = S#state.factories,
-    Factory = #factory{id = Id, req = Requires, start = MFA},
     apply_factory(Factory, S#state{factories = dict:store(Id, Factory, Fs)}).
 
 %%------------------------------------------------------------------------------
@@ -296,6 +283,8 @@ is_active(#factory{id = Id}, StartArgsSet, S) ->
 %%------------------------------------------------------------------------------
 start_factory_child(F) ->
     fun(StartArgSet, S) ->
+	    error_logger:info_report(autumn, [{starting_child_of,
+					       F#factory.id}]),
 	    {ok, Pid} = au_factory:start_child(F, StartArgSet),
 	    S#state{active = dict:store({F#factory.id, StartArgSet}, Pid,
 					S#state.active)}
@@ -325,8 +314,6 @@ find_factory_by_dependency(K, #state{factories = Fs}) ->
     [F || {_,F} <- dict:to_list(Fs),
 	  lists:member(K, F#factory.req)].
 
-
-
 %%------------------------------------------------------------------------------
 %% @doc
 %% Add an item to the set of available items.
@@ -355,6 +342,7 @@ add_item(Item, S) ->
 -spec remove_item(au_item:ref(), #state{}, term()) ->
 			 #state{}.
 remove_item(Item, S, Reason) ->
+    error_logger:info_report(autumn, [{remove_item, Item}]),
     NewVs = [V || V <- get_values_by_key(au_item:key(Item), S),
 		  V =/= Item],
     S2 = S#state{items = dict:store(au_item:key(Item), NewVs, S#state.items)},
@@ -369,9 +357,12 @@ remove_item(Item, S, Reason) ->
 			     #state{}.
 stop_dependent(I, S = #state{active = As}, Reason) ->
     S#state{active =
-		dict:filter(fun({_Id, Reqs}, Pid) ->
+		dict:filter(fun({Id, Reqs}, Pid) ->
 				    case lists:member(I, Reqs) of
 					true ->
+					    error_logger:info_report(
+					      autumn,
+					      [{stopping_child_of, Id}]),
 					    exit(Pid, Reason),
 					    false;
 					_ ->
@@ -379,6 +370,3 @@ stop_dependent(I, S = #state{active = As}, Reason) ->
 				    end
 			    end,
 			    As)}.
-
-
-

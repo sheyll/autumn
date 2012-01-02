@@ -12,9 +12,9 @@
 add_factory_already_added_test() ->
     stop_autumn(),
     {ok, _Pid} = autumn:start_link(),
-    MFA = {test_m, test_f, [test_arg]},
-    Res1 = autumn:add_factory(test_id, [xx], MFA),
-    Res2 = autumn:add_factory(test_id, [xx], MFA),
+    Fac = #factory{id = test_id, req = [x]},
+    Res1 = autumn:add_factory(Fac),
+    Res2 = autumn:add_factory(Fac),
     ?assertEqual(ok, Res1),
     ?assertEqual({error, {already_added, test_id}}, Res2).
 
@@ -27,9 +27,10 @@ remove_not_existant_factory_test() ->
 remove_existant_factory_test() ->
     stop_autumn(),
     {ok, _Pid} = autumn:start_link(),
-    Res1 = autumn:add_factory(test_id, [xx], {test_m, test_f, [test_arg]}),
+    Fac = #factory{id = test_id, req = [x]},
+    Res1 = autumn:add_factory(Fac),
     Res2 = autumn:remove_factory(test_id),
-    Res3 = autumn:add_factory(test_id, [xx], {test_m, test_f, [test_arg]}),
+    Res3 = autumn:add_factory(Fac),
     ?assertEqual(ok, Res1),
     ?assertEqual(ok, Res2),
     ?assertEqual(ok, Res3).
@@ -48,7 +49,7 @@ independent_factory_test() ->
 	      {return, {ok, Pid}}),
     em:replay(M),
     {ok, _Pid} = autumn:start_link(),
-    Res = autumn:add_factory(test_id, [], MFA),
+    Res = autumn:add_factory(Factory),
     em:verify(M),
     ?assertEqual(ok, Res).
 
@@ -82,15 +83,19 @@ simple_push_test() ->
 			end],
 	      {return, {ok, Pid2}}),
     %% third module with unsatisfied dependency to yyy
-    MFA3 = {test_m_3, test_f, [test_arg]},
+    Factory3 = #factory{id = test_id_3,
+			req = [yyy],
+			start = {test_m_3, test_f, [test_arg]}},
 
     em:replay(M),
     {ok, _Pid} = autumn:start_link(),
-    Res1 = autumn:add_factory(test_id_1, [xxx], MFA1),
-    Res2 = autumn:add_factory(test_id_2, [xxx], MFA2),
-    Res3 = autumn:add_factory(test_id_3, [xxx, yyy], MFA3),
+    Res1 = autumn:add_factory(Factory1),
+    Res2 = autumn:add_factory(Factory2),
+    Res3 = autumn:add_factory(Factory3),
 
-    autumn:push(xxx, some_val),
+    {ok, Item} = autumn:push(xxx, some_val),
+    ?assertEqual(xxx, au_item:key(Item)),
+    ?assertEqual(some_val, au_item:value(Item)),
     receive after 100 -> ok end,
     em:verify(M),
     ?assertEqual(ok, Res1),
@@ -131,6 +136,9 @@ complex_push_test() ->
 			 end}),
     %% third module with unsatisfied dependency to yyy
     MFA3 = {test_m_3, test_f, [test_arg]},
+    Factory3 = #factory{id = test_id_3,
+			req = [xxx,yyy],
+			start = MFA3},
 
     %% the fourth modules is invoked foreach zzz that factory2 pushed
     Pid4 = start(),
@@ -153,10 +161,10 @@ complex_push_test() ->
 
     em:replay(M),
     {ok, _Pid} = autumn:start_link(),
-    Res1 = autumn:add_factory(test_id_1, [xxx], MFA1),
-    Res2 = autumn:add_factory(test_id_2, [xxx], MFA2),
-    Res3 = autumn:add_factory(test_id_3, [xxx, yyy], MFA3),
-    autumn:add_factory(test_id_4, [xxx, zzz], MFA4),
+    Res1 = autumn:add_factory(Factory1),
+    Res2 = autumn:add_factory(Factory2),
+    Res3 = autumn:add_factory(Factory3),
+    autumn:add_factory(Factory4),
 
     autumn:push(xxx, some_val),
     receive
@@ -171,7 +179,7 @@ item_exit_test() ->
     stop_autumn(),
     M = em:new(),
     %% single process will be created - and destroyed as soon as
-    %% the item is pulled.
+    %% the item is inactivated.
     Pid1 = start(),
     MFA1 = {test_m_1, test_f, [test_arg]},
     Factory1 = #factory{id = test_id_1,
@@ -185,7 +193,7 @@ item_exit_test() ->
 			 end}),
     em:replay(M),
     {ok, _Pid} = autumn:start_link(),
-    autumn:add_factory(test_id_1, [xxx], MFA1),
+    autumn:add_factory(Factory1),
     monitor(process, Pid1),
     Item = au_item:new(xxx, v),
     IRef = au_item:monitor(Item),
@@ -200,40 +208,41 @@ item_exit_test() ->
     em:verify(M),
     ok.
 
-pull_test() ->
+%%%............................................................Use case    Tests
+example_itdm_test() ->
+    TestProc = self(),
     stop_autumn(),
-    M = em:new(),
-    %% single process will be created - and destroyed as soon as
-    %% the item is pulled.
-    Pid1 = start(),
-    MFA1 = {test_m_1, test_f, [test_arg]},
-    Factory1 = #factory{id = test_id_1,
-			req = [xxx],
-			start = MFA1},
-    TestP = self(),
-    em:strict(M, au_factory, start_child,
-	      [Factory1, em:any()],
-	      {function,
-	       fun(_) ->
-		       TestP ! running,
-		       {ok, Pid1}
-	       end}),
-    em:replay(M),
-    {ok, _Pid} = autumn:start_link(),
-    autumn:add_factory(test_id_1, [xxx], MFA1),
-    monitor(process, Pid1),
-    Item = au_item:new(xxx, v),
-    autumn:push(Item),
-    Reason = reason,
-    receive running -> ok end,
-    autumn:pull(Item, Reason),
-    receive
-	%% expect the item to be killed
-	{'DOWN', _, process, Pid1, Reason} -> ok
-    end,
-    em:verify(M),
-    ok.
+    %% boards
+    BoardL = au_item:new(board, left),
+    BoardR = au_item:new(board, right),
 
+    %% itdm node factory
+    NodeFac = #factory{id = node, req = [board], start = {node, start_n, []}},
+
+    M = em:new(),
+    %% itdm node factory children
+    NodePidL = start(),
+    em:strict(M, au_factory, start_child, [NodeFac, em:any()],
+	      {return, {ok, NodePidL}}),
+    NodePidR = start(),
+    em:strict(M, au_factory, start_child, [NodeFac, em:any()],
+	      {function, fun(_) ->
+				 TestProc ! finished,
+				 {ok, NodePidR}
+			 end}),
+    em:replay(M),
+    {ok, _} = autumn:start_link(),
+    autumn:add_factory(NodeFac),
+    autumn:push(BoardL),
+    autumn:push(BoardR),
+    receive finished -> ok end,
+    em:verify(M),
+    throw(complete_me).
+
+    %% right itdm node
+    %% left itdmpair endpoint item
+    %% right itdmpair endpoint item
+    %% itdm pair
 
 %%%............................................................Boilerplate Tests
 

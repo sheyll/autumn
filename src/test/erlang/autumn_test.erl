@@ -218,8 +218,28 @@ bound_by_test() ->
     %% ProcB depends on Item A and Item B, but is bound to ItemA by the user.
     %% ProcA is naturally bound to ItemA.
     %% ProcB would be started 4 times of it were not bound.
-    todo.
 
+    %% M = em:new(),
+    %% ProcAFac = #factory{id = proc_a,
+    %% 			req = [a],
+    %% 			start = {proc_a, start, []}},
+    %% ProcA1 = start(),
+    %% ItemA1 = au_item:new(),
+    %% em:strict(M, au_factory, start_child, [ProcAFac, [ItemA1]],
+    %% 	      {function, fun(_) ->
+    %% 				 autumn:push(b, 1)
+    %% 			 end}),
+
+    %% ProcA2 = start(),
+    %% em:strict(M, au_factory, start_child, [ProcAFac, [ItemA2]],
+    %% 	      {return, {ok, ProcA2}}),
+
+    %% ProcBFac = #factory{id = proc_b,
+    %% 			req = [a, b],
+    %% 			start = {proc_b, start, []}},
+
+
+    todo.
 
 %%%............................................................Boilerplate Tests
 

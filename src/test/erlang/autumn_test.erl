@@ -208,41 +208,18 @@ item_exit_test() ->
     em:verify(M),
     ok.
 
-%%%............................................................Use case    Tests
-example_itdm_test() ->
-    TestProc = self(),
-    stop_autumn(),
-    %% boards
-    BoardL = au_item:new(board, left),
-    BoardR = au_item:new(board, right),
+%%%...................................................BoundBy Relationship tests
+bound_by_test() ->
+    %% ItemA1 -> ProcA1 -> ItemB1 -> ProcB2
+    %%        -----------------------/
+    %%
+    %% ItemA2 -> ProcA3 -> ItemB2 -> ProcB4
+    %%        -----------------------/
+    %% ProcB depends on Item A and Item B, but is bound to ItemA by the user.
+    %% ProcA is naturally bound to ItemA.
+    %% ProcB would be started 4 times of it were not bound.
+    todo.
 
-    %% itdm node factory
-    NodeFac = #factory{id = node, req = [board], start = {node, start_n, []}},
-
-    M = em:new(),
-    %% itdm node factory children
-    NodePidL = start(),
-    em:strict(M, au_factory, start_child, [NodeFac, em:any()],
-	      {return, {ok, NodePidL}}),
-    NodePidR = start(),
-    em:strict(M, au_factory, start_child, [NodeFac, em:any()],
-	      {function, fun(_) ->
-				 TestProc ! finished,
-				 {ok, NodePidR}
-			 end}),
-    em:replay(M),
-    {ok, _} = autumn:start_link(),
-    autumn:add_factory(NodeFac),
-    autumn:push(BoardL),
-    autumn:push(BoardR),
-    receive finished -> ok end,
-    em:verify(M),
-    throw(complete_me).
-
-    %% right itdm node
-    %% left itdmpair endpoint item
-    %% right itdmpair endpoint item
-    %% itdm pair
 
 %%%............................................................Boilerplate Tests
 

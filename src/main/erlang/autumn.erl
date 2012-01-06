@@ -255,8 +255,6 @@ remove_factory(Id, S) ->
 %%------------------------------------------------------------------------------
 apply_factory_to_each_item_set(F, S) ->
     Reqs = F#factory.req,
-    %% unique ancestors are all items which must occur only once in all
-    %% start args of all ancestors upto the ancestor that pushed the
     UniqueIs = F#factory.unique_items,
     %% fetch all items for all required start arguments
     StartArgsValues= [get_values_by_key(R, S) || R <- Reqs],

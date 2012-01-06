@@ -211,35 +211,66 @@ item_exit_test() ->
 %%%...................................................BoundBy Relationship tests
 bound_by_test() ->
     %% ItemA1 -> ProcA1 -> ItemB1 -> ProcB2
-    %%        -----------------------/
+    %%       \----------------------/
     %%
     %% ItemA2 -> ProcA3 -> ItemB2 -> ProcB4
-    %%        -----------------------/
+    %%       \----------------------/
     %% ProcB depends on Item A and Item B, but is bound to ItemA by the user.
     %% ProcA is naturally bound to ItemA.
     %% ProcB would be started 4 times of it were not bound.
 
-    %% M = em:new(),
-    %% ProcAFac = #factory{id = proc_a,
-    %% 			req = [a],
-    %% 			start = {proc_a, start, []}},
-    %% ProcA1 = start(),
-    %% ItemA1 = au_item:new(),
-    %% em:strict(M, au_factory, start_child, [ProcAFac, [ItemA1]],
-    %% 	      {function, fun(_) ->
-    %% 				 autumn:push(b, 1)
-    %% 			 end}),
+    stop_autumn(),
+    TestProc = self(),
+    M = em:new(),
 
-    %% ProcA2 = start(),
-    %% em:strict(M, au_factory, start_child, [ProcAFac, [ItemA2]],
-    %% 	      {return, {ok, ProcA2}}),
+    ProcAFac = #factory{id = proc_a,
+    			req = [a]},
+    ProcBFac = #factory{id = proc_b,
+    			req = [a, b],
+			unique_items = [a]},
 
-    %% ProcBFac = #factory{id = proc_b,
-    %% 			req = [a, b],
-    %% 			start = {proc_b, start, []}},
+    Ia1 = au_item:new(a, 1),
+    Ia2 = au_item:new(a, 2),
 
+    em:strict(M, au_factory, start_child, [ProcAFac, [Ia1]],
+    	      {function, fun(_) ->
+				 ProcA1 = spawn(fun() ->
+							autumn:push(b, 1),
+							receive
+							after 5000 -> ok end
+						end),
+				 {ok, ProcA1}
+    			 end}),
+    em:strict(M, au_factory, start_child, [ProcBFac, em:any()],
+    	      {function, fun(_) ->
+				 TestProc ! finished,
+				 {ok, start()}
+    			 end}),
+    em:strict(M, au_factory, start_child, [ProcAFac, [Ia2]],
+    	      {function, fun(_) ->
+				 ProcA2 = spawn(fun() ->
+							autumn:push(b, 2),
+							receive
+							after 5000 -> ok end
+						end),
+				 {ok, ProcA2}
+    			 end}),
+    em:strict(M, au_factory, start_child, [ProcBFac, em:any()],
+    	      {function, fun(_) ->
+				 TestProc ! finished,
+				 {ok, start()}
+    			 end}),
+    em:replay(M),
+    {ok, _Pid} = autumn:start_link(),
+    autumn:add_factory(ProcAFac),
+    autumn:add_factory(ProcBFac),
+    autumn:push(Ia1),
+    receive finished -> ok end,
+    autumn:push(Ia2),
+    receive finished -> ok end,
+    em:verify(M),
+    ok.
 
-    todo.
 
 %%%............................................................Boilerplate Tests
 
@@ -257,10 +288,12 @@ terminate_test() ->
 %%%=============================================================================
 
 stop_autumn() ->
+%    process_flag(trap_exit, true),
     case whereis(autumn) of
 	undefined ->
 	    ok;
 	Pid ->
+	    unlink(Pid),
 	    monitor(process, Pid),
 	    exit(Pid, shutdown),
 	    receive

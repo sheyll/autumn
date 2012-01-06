@@ -48,11 +48,16 @@
 -type factory_id() :: term().
 
 -record(state,
-	{factories = dict:new() :: dict(),%% id -> #factory{}
-	 %% {factory_id(), [au_item:ref()]} -> pid()
-	 active    = dict:new() :: dict(),
-	 items     = dict:new() :: dict(), %% au_item:key() -> au_item:ref()
-	 down_handler = dict:new() :: dict() %% reference() -> fun/2
+	{ %% id -> #factory{}
+	  factories = dict:new() :: dict(),
+	  %% {factory_id(), [au_item:ref()]} -> pid()
+	  active    = dict:new() :: dict(),
+	  %% pid() -> {factory_id(), [au_item:ref()]}
+	  reverse_active = dict:new() :: dict(),
+	  %% au_item:key() -> au_item:ref()
+	  items     = dict:new() :: dict(),
+	  %% reference() -> fun/2
+	  down_handler = dict:new() :: dict()
 	}).
 
 %%%=============================================================================
@@ -192,7 +197,7 @@ handle_cast({push, Item}, S) ->
     error_logger:info_report(autumn, [{pushed, Item}]),
     S2 = add_item(Item, S),
     Factories = find_factory_by_dependency(au_item:key(Item), S2),
-    S3 = lists:foldl(fun apply_factory/2, S2, Factories),
+    S3 = lists:foldl(fun apply_factory_to_each_item_set/2, S2, Factories),
     {noreply, S3}.
 
 %%------------------------------------------------------------------------------
@@ -231,7 +236,9 @@ get_factory_by_id(Id, #state{factories = Fs}) ->
 %%------------------------------------------------------------------------------
 add_factory(Factory = #factory{id = Id}, S) ->
     Fs = S#state.factories,
-    apply_factory(Factory, S#state{factories = dict:store(Id, Factory, Fs)}).
+    apply_factory_to_each_item_set(Factory,
+				   S#state{factories =
+					       dict:store(Id, Factory, Fs)}).
 
 %%------------------------------------------------------------------------------
 %% @private
@@ -246,18 +253,109 @@ remove_factory(Id, S) ->
 %% valid set of start args.
 %% @end
 %%------------------------------------------------------------------------------
-apply_factory(F, S) ->
+apply_factory_to_each_item_set(F, S) ->
     Reqs = F#factory.req,
+    %% unique ancestors are all items which must occur only once in all
+    %% start args of all ancestors upto the ancestor that pushed the
+    UniqueIs = F#factory.unique_items,
     %% fetch all items for all required start arguments
     StartArgsValues= [get_values_by_key(R, S) || R <- Reqs],
 
     %% create the cartesian product of all types of start arguments...
     StartArgsSets = [StartArgsSet || StartArgsSet <- perms(StartArgsValues),
 				     %% .. filtering start arg sets alredy used
-				     not is_active(F, StartArgsSet, S)],
+				     not is_active(F, StartArgsSet, S),
+
+				     %% check uniqueness of every unique start arg
+				     %% for each ancestor:
+				     assert_items_unique(UniqueIs, StartArgsSet, S)],
 
     %% start a child for every set of start args
     lists:foldl(start_factory_child(F), S, StartArgsSets).
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% A small wrapper around `is_item_unique/3' that applies each item or returns
+%% `true' if there are no items that need to be unique.
+%% @end
+%%------------------------------------------------------------------------------
+-spec assert_items_unique([au_item:id()], [au_item:ref()], #state{}) ->
+			      boolean().
+assert_items_unique(UniqueItems, Items, State) ->
+    lists:all(fun(I) ->
+		      is_item_unique(I, Items, State)
+	      end,
+	      UniqueItems).
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% This is a complex test, that checks if, among a set of items and
+%% all items that were requrired to build all processes, that created
+%% the items, there are no two items with the key specified in
+%% parameter one but diffrent values.
+%% @end
+%%------------------------------------------------------------------------------
+-spec is_item_unique(au_item:id(), [au_item:ref()], #state{}) ->
+			    boolean().
+is_item_unique(UniqueItemId, Items, S) ->
+    %% get all items required to build all processes that creators of
+    %% the items in `Items'
+    AllItems = Items ++ [AI || I  <- Items,
+			       AI <- get_ancestor_items(I, S)],
+
+    %% Filter all items with key `UniqueItemId'
+    ItemsWithKey = [I || I <- AllItems,
+			 au_item:key(I) =:= UniqueItemId],
+
+    %% Check that all items are equal.
+    case ItemsWithKey of
+	[] ->
+	    true;
+
+	[H|T] ->
+	    not lists:any(fun(E) ->
+				  E =/= H
+			  end,
+			  T)
+    end.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% Recursively gathers all items required to build all processes up to
+%% the processes, that build the item in parameter one.
+%% @end
+%%------------------------------------------------------------------------------
+-spec get_ancestor_items(au_item:ref(), #state{}) ->
+				[au_item:ref()].
+get_ancestor_items(Item, S) ->
+    Creator = au_item:get_creator(Item),
+    StartArgs = get_start_args_of(Creator, S),
+    AncItems =
+	[I ||
+	    %% Get the start arguments of the process that created `Item'
+	    StartArg <- StartArgs,
+	    %% For every start arg item get the ancestors recursively
+	    AIs <- get_ancestor_items(StartArg, S),
+	    %% This implicitly joins the lists of lists
+	    I <- AIs],
+    StartArgs ++ AncItems.
+
+%%------------------------------------------------------------------------------
+%% @doc
+%% If `Creator' is a process managed by `autumn' return a list of its
+%% start args.
+%% @end
+%%------------------------------------------------------------------------------
+get_start_args_of(Creator, S) ->
+    %% look up the process in the dict of active processes
+    case dict:find(Creator, S#state.reverse_active) of
+	{ok, {_FactoryId, StartArgs}} ->
+	    StartArgs;
+
+	error ->
+	    %% seems the process is not managed by autumn, that's okay.
+	    []
+    end.
 
 %%------------------------------------------------------------------------------
 %% @private Create all permutations of a list of lists.
@@ -287,7 +385,9 @@ start_factory_child(F) ->
 					       F#factory.id}]),
 	    {ok, Pid} = au_factory:start_child(F, StartArgSet),
 	    S#state{active = dict:store({F#factory.id, StartArgSet}, Pid,
-					S#state.active)}
+					S#state.active),
+		    reverse_active = dict:store(Pid, {F#factory.id, StartArgSet},
+					S#state.reverse_active)}
     end.
 
 %%------------------------------------------------------------------------------
@@ -355,18 +455,26 @@ remove_item(Item, S, Reason) ->
 %%------------------------------------------------------------------------------
 -spec stop_dependent(au_item:ref(), #state{}, term()) ->
 			     #state{}.
-stop_dependent(I, S = #state{active = As}, Reason) ->
-    S#state{active =
-		dict:filter(fun({Id, Reqs}, Pid) ->
-				    case lists:member(I, Reqs) of
-					true ->
-					    error_logger:info_report(
-					      autumn,
-					      [{stopping_child_of, Id}]),
-					    exit(Pid, Reason),
-					    false;
-					_ ->
-					    true
-				    end
-			    end,
-			    As)}.
+stop_dependent(I, S = #state{active = As, reverse_active = RAs}, Reason) ->
+    {NewAs, NewRAs} =
+	dict:fold(fun({Id, Reqs}, Pid, {NAs, NRAs}) ->
+			  case lists:member(I, Reqs) of
+			      true ->
+				  error_logger:info_report(
+				    autumn,
+				    [{stopping_child_of, Id}]),
+				  %% stop the process, conserving the
+				  %% actual reason
+				  exit(Pid, Reason),
+				  %% remove the entries from the active and
+				  %% reverse_active dicts
+				  {dict:erase({Id, Reqs}, NAs),
+				   dict:erase(Pid, NRAs)};
+
+			      _ ->
+				  {NAs, NRAs}
+			  end
+		  end,
+		  {As, RAs},
+		  As),
+    S#state{active = NewAs, reverse_active = NewRAs}.

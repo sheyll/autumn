@@ -40,14 +40,17 @@ start_link() ->
 %%------------------------------------------------------------------------------
 init([]) ->
     RestartStrategy = one_for_one,
-    MaxRestarts = 5,
-    MaxTSeconds = 1800,
+    MaxRestarts = 0,
+    MaxTSeconds = 1,
+    AuFactorySup = {au_factory_sup,
+		    {au_factory_sup, start_link, []},
+		    permanent, infinity, supervisor, [au_factory_sup]},
     AutumnServer = {autumn,
 		    {autumn, start_link, []},
 		    permanent, 300000, worker, [autumn]},
     {ok,
      {{RestartStrategy, MaxRestarts, MaxTSeconds},
-      [AutumnServer]}}.
+      [AuFactorySup, AutumnServer]}}.
 
 %%%=============================================================================
 %%% Internal Functions

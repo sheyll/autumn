@@ -21,8 +21,8 @@
 %% API that can be called only by processes created by an autumn server
 -export([add_factory/1,
 	 remove_factory/1,
-	 push/2,
-	 push/1]).
+         push/2,
+         push/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -45,14 +45,12 @@
 -define(SERVER, ?MODULE).
 -registered([?SERVER]).
 
--type factory_id() :: term().
-
 -record(state,
 	{ %% id -> #factory{}
 	  factories = dict:new() :: dict(),
-	  %% {factory_id(), [au_item:ref()]} -> pid()
+	  %% {au_factory:id(), [au_item:ref()]} -> pid()
 	  active    = dict:new() :: dict(),
-	  %% pid() -> {factory_id(), [au_item:ref()]}
+	  %% pid() -> {au_factory:id(), [au_item:ref()]}
 	  reverse_active = dict:new() :: dict(),
 	  %% au_item:key() -> au_item:ref()
 	  items     = dict:new() :: dict(),
@@ -94,6 +92,13 @@ start_link() ->
 %%
 %% The arguments of the function `M:F' begin with `ExtraArgs' followed
 %% by a proplist of the items requested by the first parameter.
+%%
+%% When a child crashes, the items defined as start arguments in
+%% `invalidate_on_crash' are invalidated and removed. This might
+%% cause more processes to die, especially those that created and
+%% linked to the items.  When a child exitted with reason `normal'
+%% or `shutdown' the start argument items in
+%% `invalidate_on_shutdown' are invalidated.
 %%
 %% Return values:
 %%
@@ -235,6 +240,7 @@ get_factory_by_id(Id, #state{factories = Fs}) ->
 %% @private Add a factory to the set of factories.If possible apply factory.
 %%------------------------------------------------------------------------------
 add_factory(Factory = #factory{id = Id}, S) ->
+    au_factory_sup:add_factory(Factory),
     Fs = S#state.factories,
     apply_factory_to_each_item_set(Factory,
 				   S#state{factories =
@@ -244,6 +250,7 @@ add_factory(Factory = #factory{id = Id}, S) ->
 %% @private
 %%------------------------------------------------------------------------------
 remove_factory(Id, S) ->
+    au_factory_sup:remove_factory(Id),
     Fs = S#state.factories,
     S#state{factories = dict:erase(Id, Fs)}.
 
@@ -269,7 +276,7 @@ apply_factory_to_each_item_set(F, S) ->
 				     assert_items_unique(UniqueIs, StartArgsSet, S)],
 
     %% start a child for every set of start args
-    lists:foldl(start_factory_child(F), S, StartArgsSets).
+    lists:foldl(start_factory_child(F#factory.id), S, StartArgsSets).
 
 %%------------------------------------------------------------------------------
 %% @doc
@@ -377,15 +384,27 @@ is_active(#factory{id = Id}, StartArgsSet, S) ->
 %% Starts a new child of a factory for some start args and adds it to the state.
 %% @end
 %%------------------------------------------------------------------------------
-start_factory_child(F) ->
+-spec start_factory_child(au_factory:id()) ->
+				 fun(([au_item:ref()], #state{}) -> #state{}).
+start_factory_child(Id) ->
     fun(StartArgSet, S) ->
-	    error_logger:info_report(autumn, [{starting_child_of,
-					       F#factory.id}]),
-	    {ok, Pid} = au_factory:start_child(F, StartArgSet),
-	    S#state{active = dict:store({F#factory.id, StartArgSet}, Pid,
-					S#state.active),
-		    reverse_active = dict:store(Pid, {F#factory.id, StartArgSet},
-					S#state.reverse_active)}
+	    error_logger:info_report(autumn, [{starting_child_of, Id},
+					      {start_args, StartArgSet}]),
+	    case au_factory_sup:start_child(Id, StartArgSet) of
+		{ok, Pid} ->
+		    error_logger:info_report(autumn, [{started_child_of, Id},
+						      {start_args, StartArgSet},
+						      {pid, Pid}]),
+		    S#state{active = dict:store({Id, StartArgSet}, Pid,
+						S#state.active),
+			    reverse_active = dict:store(Pid, {Id, StartArgSet},
+							S#state.reverse_active)};
+		Error ->
+		    error_logger:error_report(autumn, [{error_starting_child_of, Id},
+						       {start_args, StartArgSet},
+						       {error, Error}]),
+		    S
+	    end
     end.
 
 %%------------------------------------------------------------------------------
@@ -441,9 +460,10 @@ add_item(Item, S) ->
 			 #state{}.
 remove_item(Item, S, Reason) ->
     error_logger:info_report(autumn, [{remove_item, Item}]),
-    NewVs = [V || V <- get_values_by_key(au_item:key(Item), S),
-		  V =/= Item],
-    S2 = S#state{items = dict:store(au_item:key(Item), NewVs, S#state.items)},
+    OtherItems = [I || I <- get_values_by_key(au_item:key(Item), S),
+		       I =/= Item],
+    ItemsLeft = dict:store(au_item:key(Item), OtherItems, S#state.items),
+    S2 = S#state{items = ItemsLeft},
     stop_dependent(Item, S2, Reason).
 
 %%------------------------------------------------------------------------------

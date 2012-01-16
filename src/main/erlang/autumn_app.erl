@@ -5,7 +5,7 @@
 %%% Pluggable supervision and dependency injection application.
 %%%
 %%% Manages starting and stopping of processes, and passing of
-%%% parameters.
+%%% start parameters.
 %%%
 %%% == Design goals ==
 %%%
@@ -75,7 +75,12 @@
 %%% user requests new values from a registry which has not yet
 %%% cleanedup invalid resources.
 %%%
-%%% Autumn handles this somehow.
+%%% When a child crashes, the items defined as start arguments in
+%%% `invalidate_on_crash' are invalidated and removed. This might
+%%% cause more processes to die, especially those that created and
+%%% linked to the items.  When a child exitted with reason `normal'
+%%% or `shutdown' the start argument items in
+%%% `invalidate_on_shutdown' are invalidated.
 %%%
 %%% Process tree management is tricky. If c_worker requires b1_worker
 %%% and b2_worker, and both b-workers require a-worker, it might be

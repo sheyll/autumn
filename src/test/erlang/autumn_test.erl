@@ -1,7 +1,7 @@
 -module(autumn_test).
 
 -include_lib("eunit/include/eunit.hrl").
--include("autumn.hrl").
+-include("au_factory.hrl").
 
 -import(au_test_utils, [stop_registered/1,
 			stop_proc/1,
@@ -56,7 +56,7 @@ independent_factory_test() ->
     stop_autumn(),
     M = em:new(),
     Pid = start(),
-    MFA = {test_m, test_f, [test_arg]},
+    MFA = {test_m, test_f},
     Factory = #factory{id = test_id,
 		       req = [],
 		       start = MFA},
@@ -76,18 +76,18 @@ simple_push_test() ->
     M = em:new(),
     %% two modules with the same requirement, both must be started
     Pid1 = start(),
-    MFA1 = {test_m_1, test_f, [test_arg]},
+    MFA1 = {test_m_1, test_f},
     Factory1 = #factory{id = test_id_1,
 			req = [xxx],
 			start = MFA1},
-    MFA2 = {test_m_2, test_f, [test_arg]},
+    MFA2 = {test_m_2, test_f},
     Factory2 = #factory{id = test_id_2,
 			req = [xxx],
 			start = MFA2},
     %% third module with unsatisfied dependency to yyy
     Factory3 = #factory{id = test_id_3,
 			req = [yyy],
-			start = {test_m_3, test_f, [test_arg]}},
+			start = {test_m_3, test_f}},
     em:strict(M, au_factory_sup, add_factory, [Factory1]),
     em:strict(M, au_factory_sup, add_factory, [Factory2]),
     em:strict(M, au_factory_sup, add_factory, [Factory3]),
@@ -125,7 +125,7 @@ simple_push_test() ->
 start_child_error_test() ->
     stop_autumn(),
     M = em:new(),
-    MFA1 = {test_m_1, test_f, [test_arg]},
+    MFA1 = {test_m_1, test_f},
     Factory1 = #factory{id = test_id_1,
 			req = [xxx],
 			start = MFA1},
@@ -148,24 +148,24 @@ complex_push_test() ->
     M = em:new(),
     %% two modules with the same requirement, both must be started
     Pid1 = start(),
-    MFA1 = {test_m_1, test_f, [test_arg]},
+    MFA1 = {test_m_1, test_f},
     Factory1 = #factory{id = test_id_1,
 			req = [xxx],
 			start = MFA1},
     Pid2 = start(),
-    MFA2 = {test_m_2, test_f, [test_arg]},
+    MFA2 = {test_m_2, test_f},
     Factory2 = #factory{id = test_id_2,
 			req = [xxx],
 			start = MFA2},
     %% third module with unsatisfied dependency to yyy
-    MFA3 = {test_m_3, test_f, [test_arg]},
+    MFA3 = {test_m_3, test_f},
     Factory3 = #factory{id = test_id_3,
 			req = [xxx,yyy],
 			start = MFA3},
 
     %% the fourth modules is invoked foreach zzz that factory2 pushed
     Pid4 = start(),
-    MFA4 = {test_m_4, test_f, [test_arg]},
+    MFA4 = {test_m_4, test_f},
     Factory4 = #factory{id = test_id_4,
 			req = [xxx, zzz],
 			start = MFA4},
@@ -228,7 +228,7 @@ item_exit_test() ->
     %% single process will be created - and destroyed as soon as
     %% the item is inactivated.
     Pid1 = start(),
-    MFA1 = {test_m_1, test_f, [test_arg]},
+    MFA1 = {test_m_1, test_f},
     Factory1 = #factory{id = test_id_1,
 			req = [xxx],
 			start = MFA1},

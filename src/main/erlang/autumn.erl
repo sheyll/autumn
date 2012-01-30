@@ -36,7 +36,7 @@
 %%% Includes
 %%%=============================================================================
 
--include("autumn.hrl").
+-include("au_factory.hrl").
 
 %%%=============================================================================
 %%% Types
@@ -135,10 +135,14 @@ remove_factory(Id) ->
 %% @doc
 %%
 %% Provide an item, that factories may use to start new
-%% processes. NOTE: A processes MUST NOT push an item that was
-%% injected as start argument. There is no reason why this should be
-%% necessary. When this is done some autumn functions might get into
-%% infinite loops.
+%% processes. When the item is invalidated, all processes that require
+%% the item will be exited. This may lead to a chain of exits as
+%% processes die that are linked to items they created, causing these
+%% items to also be invalidated.
+%%
+%% NOTE: A processes MUST NOT push an item that was injected as start
+%% argument. There is no reason why this should be necessary. When
+%% this is done some autumn functions might get into infinite loops.
 %%
 %% @end
 %% ------------------------------------------------------------------------------
@@ -152,7 +156,7 @@ push(Item) ->
 %%
 %% Provide an item, that factories may use to start new
 %% processes. This is a conveniece function that will create a new
-%% item process and link it with the calling process.
+%% item and link it with the calling process.
 %%
 %% @end
 %% ------------------------------------------------------------------------------
